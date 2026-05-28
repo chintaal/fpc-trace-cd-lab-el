@@ -1,0 +1,91 @@
+{
+  "id": "03_where_block",
+  "name": "WHERE Block (Masked Array Assignment)",
+  "description": "Masked elemental operations — condition becomes boolean mask, ELSEWHERE clause, fir.if inside hlfir.elemental",
+  "category": "array_operations",
+  "complexity": "HIGH",
+  "fortran_standard": "F90",
+  "key_patterns": ["hlfir.elemental masked", "fir.if inside loop body", "SELECT + predicated store in LLVM IR"],
+  "source": "subroutine safe_sqrt(result, input, n)\n  implicit none\n  integer, intent(in)  :: n\n  real,    intent(in)  :: input(n)\n  real,    intent(out) :: result(n)\n\n  WHERE (input > 0.0)\n    result = SQRT(input)\n  ELSEWHERE\n    result = 0.0\n  END WHERE\n\nend subroutine safe_sqrt",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  SubroutineSubprogram\n  | SubroutineStmt -> Name = 'safe_sqrt'\n  | SpecificationPart\n  | | ImplicitPart -> ImplicitStmt -> ImplicitNoneStmt\n  | | TypeDeclarationStmt (INTEGER intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'n'\n  | | TypeDeclarationStmt (REAL intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'input' (shape: n)\n  | | TypeDeclarationStmt (REAL intent=IntentOut)\n  | | | EntityDecl -> ObjectName = 'result' (shape: n)\n  | ExecutionPart\n  | | ExecutionPartConstruct -> ExecutableConstruct\n  | | | WhereConstruct\n  | | | | WhereConstructStmt\n  | | | | | MaskExpr -> Expr -> Level4Expr -> RelationalOp\n  | | | | |   Level3Expr -> Name = 'input'\n  | | | | |   RelOp = '.GT.'\n  | | | | |   Level3Expr -> RealLiteralConstant = '0.0'\n  | | | | WhereBodyConstruct -> MaskedElsewhereStmt ... (no — WhereBodyConstruct)\n  | | | | | AssignmentStmt\n  | | | | | | Variable -> Name = 'result'\n  | | | | | | Expr -> FunctionReference\n  | | | | | |   Name = 'SQRT'\n  | | | | | |   SectionSubscriptList -> Name = 'input'\n  | | | | ElsewhereStmt\n  | | | | WhereBodyConstruct\n  | | | | | AssignmentStmt\n  | | | | | | Variable -> Name = 'result'\n  | | | | | | Expr -> RealLiteralConstant = '0.0'\n  | | | | EndWhereStmt\n  | EndSubroutineStmt -> Name = 'safe_sqrt'",
+      "line_count": 34,
+      "key_ops": ["WhereConstruct", "WhereConstructStmt", "MaskExpr", "ElsewhereStmt", "AssignmentStmt"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: safe_sqrt\n  result: rank=1 REAL(4)    intent=IntentOut  shape=(1:n)\n  input:  rank=1 REAL(4)    intent=IntentIn   shape=(1:n)\n  n:      rank=0 INTEGER(4) intent=IntentIn\n\nWHERE analysis:\n  Mask expression: input > 0.0\n    Type: LOGICAL(4) array rank=1 shape=(1:n)\n    Evaluation: element-wise comparison, produces temp mask array\n  WHERE body: result = SQRT(input)\n    SQRT: elemental intrinsic on REAL(4), lowered inline (not runtime call)\n    Applies only where mask is .TRUE.\n  ELSEWHERE body: result = 0.0\n    Scalar broadcast: 0.0 broadcast to rank-1 shape\n    Applies where mask is .FALSE.\n  Conformance: mask, result, input all rank=1 shape=(1:n) — OK\n  No aliasing: result and input are distinct dummy arguments",
+      "line_count": 16,
+      "key_ops": ["result", "input", "mask"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After InlineElementals (fir-inline-elementals) ***\nmodule @_QMsafe_sqrt {\n  func.func @_QPsafe_sqrt(\n      %arg0: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"result\", fir.inout},\n      %arg1: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"input\", fir.in},\n      %arg2: !fir.ref<i32>               {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %c0     = arith.constant 0.0 : f32\n    %c1     = arith.constant 1 : index\n    %n_val  = fir.load %arg2 : !fir.ref<i32>\n    %n_idx  = fir.convert %n_val : (i32) -> index\n    %shape  = fir.shape %n_idx : (index) -> !fir.shape<1>\n    %in_arr = fir.array_load %arg1(%shape) : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> !fir.array<?xf32>\n    %res_arr= fir.array_load %arg0(%shape) : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> !fir.array<?xf32>\n\n    // The WHERE condition materializes as an fir.do_loop with fir.if branching\n    %result = fir.do_loop %iv = %c1 to %n_idx step %c1\n                  iter_args(%acc = %res_arr) -> (!fir.array<?xf32>) {\n      %in_el  = fir.array_fetch %in_arr, %iv : (!fir.array<?xf32>, index) -> f32\n      %zero   = arith.constant 0.0 : f32\n      %mask   = arith.cmpf ogt, %in_el, %zero : f32   // input(iv) > 0.0\n\n      // fir.if encodes the WHERE / ELSEWHERE split\n      %upd = fir.if %mask -> (!fir.array<?xf32>) {\n        // WHERE body: result(iv) = SQRT(input(iv))\n        %sq   = math.sqrt %in_el : f32               // SQRT intrinsic → llvm.sqrt\n        %a2   = fir.array_update %acc, %sq, %iv : (!fir.array<?xf32>, f32, index) -> !fir.array<?xf32>\n        fir.result %a2 : !fir.array<?xf32>\n      } else {\n        // ELSEWHERE body: result(iv) = 0.0\n        %a3   = fir.array_update %acc, %c0, %iv : (!fir.array<?xf32>, f32, index) -> !fir.array<?xf32>\n        fir.result %a3 : !fir.array<?xf32>\n      }\n      fir.result %upd : !fir.array<?xf32>\n    }\n    fir.array_merge_store %res_arr, %result to %arg0\n        : !fir.array<?xf32>, !fir.array<?xf32>, !fir.ref<!fir.array<?xf32>>\n    return\n  }\n} loc(#loc1)\n#loc1 = loc(\"03_where_block.f90\":4:0)\n#loc2 = loc(\"03_where_block.f90\":11:3)\n#loc3 = loc(\"03_where_block.f90\":12:5)\n#loc4 = loc(\"03_where_block.f90\":14:5)",
+      "line_count": 45,
+      "key_ops": ["fir.do_loop", "fir.array_load", "fir.array_fetch", "fir.if", "fir.array_update", "fir.array_merge_store", "arith.cmpf", "math.sqrt"],
+      "loc_map": {
+        "03_where_block.f90:11": [15, 16, 17, 18, 19, 20],
+        "03_where_block.f90:12": [22, 23, 24, 25, 26],
+        "03_where_block.f90:14": [28, 29, 30, 31]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After HLFIR Lowering (flang-lower-hlfir) ***\nmodule @_QMsafe_sqrt {\n  func.func @_QPsafe_sqrt(\n      %arg0: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"result\", fir.inout},\n      %arg1: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"input\",  fir.in},\n      %arg2: !fir.ref<i32>               {fir.bindc_name = \"n\",      fir.in}\n  ) {\n    %0 = fir.load %arg2 : !fir.ref<i32>\n    %1 = fir.convert %0 : (i32) -> index\n    %shape = fir.shape %1 : (index) -> !fir.shape<1>\n\n    %result:2 = hlfir.declare %arg0(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_out>, uniq_name = \"_QFsafe_sqrtEresult\"}\n        : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>)\n       -> (!fir.box<!fir.array<?xf32>>, !fir.ref<!fir.array<?xf32>>)\n\n    %input:2 = hlfir.declare %arg1(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_in>, uniq_name = \"_QFsafe_sqrtEinput\"}\n        : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>)\n       -> (!fir.box<!fir.array<?xf32>>, !fir.ref<!fir.array<?xf32>>)\n\n    // WHERE mask evaluated as hlfir.elemental producing !hlfir.expr<?x!fir.logical<4>>\n    %mask_expr = hlfir.elemental %shape\n        : (!fir.shape<1>) -> !hlfir.expr<?x!fir.logical<4>> {\n    ^bb0(%i: index):\n      %in_el = hlfir.apply %input#0, %i : (!fir.box<!fir.array<?xf32>>, index) -> f32\n      %zero  = arith.constant 0.0 : f32\n      %cmp   = arith.cmpf ogt, %in_el, %zero : f32\n      %log   = fir.convert %cmp : (i1) -> !fir.logical<4>\n      hlfir.yield_element %log : !fir.logical<4>\n    }\n\n    // WHERE body: SQRT(input) applied only where mask is .TRUE.\n    %sqrt_expr = hlfir.elemental %shape\n        : (!fir.shape<1>) -> !hlfir.expr<?xf32> {\n    ^bb0(%i: index):\n      %mask_el = hlfir.apply %mask_expr, %i : (!hlfir.expr<?x!fir.logical<4>>, index) -> !fir.logical<4>\n      %in_el   = hlfir.apply %input#0, %i   : (!fir.box<!fir.array<?xf32>>, index) -> f32\n      %sq      = math.sqrt %in_el : f32\n      %zero    = arith.constant 0.0 : f32\n      %mask_i1 = fir.convert %mask_el : (!fir.logical<4>) -> i1\n      %sel     = arith.select %mask_i1, %sq, %zero : f32   // WHERE/ELSEWHERE merge\n      hlfir.yield_element %sel : f32\n    }\n\n    hlfir.assign %sqrt_expr to %result#0\n        : !hlfir.expr<?xf32>, !fir.box<!fir.array<?xf32>>\n    hlfir.destroy %sqrt_expr  : !hlfir.expr<?xf32>\n    hlfir.destroy %mask_expr  : !hlfir.expr<?x!fir.logical<4>>\n    return\n  }\n}\n#loc1 = loc(\"03_where_block.f90\":4:0)\n#loc2 = loc(\"03_where_block.f90\":11:3)",
+      "line_count": 55,
+      "key_ops": ["hlfir.declare", "hlfir.elemental", "hlfir.apply", "arith.cmpf", "math.sqrt", "arith.select", "hlfir.yield_element", "hlfir.assign", "hlfir.destroy"],
+      "loc_map": {
+        "03_where_block.f90:11": [22, 23, 24, 25, 26, 27, 28, 29, 30],
+        "03_where_block.f90:12": [33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '03_where_block.f90'\nsource_filename = \"03_where_block.f90\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\ndeclare float @llvm.sqrt.f32(float) #1\n\ndefine void @_QPsafe_sqrt(\n    ptr nocapture %0,           ; result(:)\n    ptr nocapture readonly %1,  ; input(:)\n    ptr nocapture readonly %2   ; n\n) #0 !dbg !5 {\nentry:\n  %n_val = load i32, ptr %2, align 4, !dbg !10\n  %n_ext = sext i32 %n_val to i64\n  %guard = icmp sgt i64 %n_ext, 0\n  br i1 %guard, label %loop.ph, label %exit\n\nloop.ph:\n  br label %loop\n\nloop:                           ; preds = %loop.ph, %loop\n  %iv = phi i64 [ 0, %loop.ph ], [ %iv.next, %loop ], !dbg !11\n\n  ; Load input element and test mask condition\n  %in_ptr  = getelementptr inbounds float, ptr %1, i64 %iv, !dbg !11\n  %in_val  = load float, ptr %in_ptr, align 4, !dbg !11\n  %mask    = fcmp ogt float %in_val, 0.000000e+00, !dbg !11  ; WHERE condition\n\n  ; Compute both branches (scalar); SELECT picks the result\n  ; Flang does not speculate math.sqrt on masked WHERE — uses select\n  %sq_val  = call float @llvm.sqrt.f32(float %in_val), !dbg !12\n  %res_val = select i1 %mask, float %sq_val, float 0.000000e+00, !dbg !12\n\n  ; Store to result(:)\n  %res_ptr = getelementptr inbounds float, ptr %0, i64 %iv, !dbg !12\n  store float %res_val, ptr %res_ptr, align 4, !dbg !12\n\n  %iv.next = add nuw nsw i64 %iv, 1\n  %done    = icmp eq i64 %iv.next, %n_ext\n  br i1 %done, label %exit, label %loop\n\nexit:\n  ret void, !dbg !13\n}\n\nattributes #0 = { nounwind }\nattributes #1 = { nounwind readnone speculatable }\n\n!5  = distinct !DISubprogram(name: \"safe_sqrt\", line: 4)\n!10 = !DILocation(line: 5, column: 3, scope: !5)\n!11 = !DILocation(line: 11, column: 3, scope: !5)\n!12 = !DILocation(line: 12, column: 5, scope: !5)\n!13 = !DILocation(line: 16, column: 1, scope: !5)",
+      "line_count": 52,
+      "key_ops": ["getelementptr", "load", "fcmp", "call", "select", "store", "br", "phi"],
+      "loc_map": {
+        "03_where_block.f90:11": [19, 20, 21, 22, 23, 24],
+        "03_where_block.f90:12": [25, 26, 27, 28, 29, 30, 31]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 11,
+      "source_col": 3,
+      "source_text": "  WHERE (input > 0.0)",
+      "construct_type": "where_block",
+      "parse_tree_nodes": ["WhereConstruct", "WhereConstructStmt", "MaskExpr", "RelationalOp"],
+      "fir_ops": ["arith.cmpf ogt", "fir.if", "fir.do_loop"],
+      "hlfir_ops": ["hlfir.elemental (mask)", "arith.cmpf ogt", "fir.convert", "hlfir.yield_element"],
+      "llvm_ir_lines": ["fcmp ogt", "select", "phi"],
+      "lowering_notes": "The WHERE mask expression lowers to a masked hlfir.elemental that produces !hlfir.expr<?x!fir.logical<4>>. In HLFIR the SQRT body and ELSEWHERE 0.0 are merged into a single elemental using arith.select — the compiler does not emit two separate loops. At LLVM IR level this becomes fcmp + select in the loop body, allowing the vectorizer to use masked SIMD blend instructions."
+    },
+    {
+      "source_line": 12,
+      "source_col": 5,
+      "source_text": "    result = SQRT(input)",
+      "construct_type": "where_block",
+      "parse_tree_nodes": ["AssignmentStmt", "FunctionReference"],
+      "fir_ops": ["math.sqrt", "fir.array_update"],
+      "hlfir_ops": ["hlfir.apply", "math.sqrt", "arith.select"],
+      "llvm_ir_lines": ["call @llvm.sqrt.f32", "select"],
+      "lowering_notes": "SQRT is an elemental intrinsic that lowers to math.sqrt in MLIR (not a runtime call), which maps to @llvm.sqrt.f32 — a target-agnostic LLVM intrinsic. The WHERE guard is encoded as an arith.select rather than a branch, enabling branchless SIMD vectorization."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "WHERE Mask → arith.select (branchless)",
+      "description": "Flang lowers WHERE/ELSEWHERE pairs into a single hlfir.elemental body using arith.select rather than control flow branches, enabling LLVM to vectorize with SIMD blend/select instructions"
+    },
+    {
+      "name": "Elemental Intrinsic (SQRT) → math dialect → llvm.sqrt",
+      "description": "Fortran elemental intrinsics pass through the MLIR math dialect (math.sqrt) before being lowered to LLVM target-agnostic intrinsics (@llvm.sqrt.f32), keeping the IR portable across targets"
+    }
+  ]
+}

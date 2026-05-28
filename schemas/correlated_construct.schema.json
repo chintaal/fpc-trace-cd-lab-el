@@ -1,0 +1,146 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fpc-trace/schemas/correlated_construct.schema.json",
+  "title": "PipelineResult",
+  "description": "A complete Flang pipeline trace for one Fortran construct: source + five-stage IR + source-to-IR correlations.",
+  "type": "object",
+
+  "required": [
+    "id", "name", "description", "category", "complexity",
+    "fortran_standard", "source", "stages", "correlations"
+  ],
+
+  "properties": {
+    "id":               { "type": "string", "minLength": 1,
+                          "description": "Slug, e.g. 02_do_concurrent" },
+    "name":             { "type": "string", "minLength": 1 },
+    "description":      { "type": "string" },
+    "category":         { "type": "string",
+                          "enum": ["array_operations","concurrency","control_flow",
+                                   "data_structures","polymorphism","distributed",
+                                   "intrinsics","procedures","custom"] },
+    "complexity":       { "type": "string",
+                          "enum": ["LOW","MEDIUM","HIGH","VERY_HIGH","UNKNOWN"] },
+    "fortran_standard": { "type": "string" },
+    "key_patterns":     { "type": "array", "items": { "type": "string" } },
+    "source":           { "type": "string", "minLength": 1,
+                          "description": "Full Fortran source text of the construct." },
+
+    "stages": {
+      "type": "object",
+      "description": "One StageOutput per Flang pipeline stage.",
+      "required": ["parse_tree","semantics","fir","hlfir","llvm_ir"],
+      "additionalProperties": false,
+      "properties": {
+        "parse_tree": { "$ref": "#/definitions/StageOutput" },
+        "semantics":  { "$ref": "#/definitions/StageOutput" },
+        "fir":        { "$ref": "#/definitions/StageOutput" },
+        "hlfir":      { "$ref": "#/definitions/StageOutput" },
+        "llvm_ir":    { "$ref": "#/definitions/StageOutput" }
+      }
+    },
+
+    "correlations": {
+      "type": "array",
+      "description": "Per-source-line cross-stage mappings.",
+      "items": { "$ref": "#/definitions/SourceCorrelation" }
+    },
+
+    "lowering_patterns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name","description"],
+        "properties": {
+          "name":        { "type": "string" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+
+    "compilation_mode": {
+      "type": "string",
+      "enum": ["simulation","real"],
+      "default": "simulation",
+      "description": "simulation = pre-generated data; real = live flang-new output."
+    },
+
+    "flang_version": {
+      "type": "string",
+      "description": "Present when compilation_mode=real. e.g. 'flang version 18.0.0'"
+    }
+  },
+
+  "definitions": {
+    "StageOutput": {
+      "type": "object",
+      "required": ["stage","content","line_count","key_ops"],
+      "additionalProperties": true,
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": ["parse_tree","semantics","fir","hlfir","llvm_ir"]
+        },
+        "content":    { "type": "string",
+                        "description": "Raw text output from this stage." },
+        "line_count": { "type": "integer", "minimum": 0 },
+        "key_ops": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Dominant IR operations / node types in this stage."
+        },
+        "loc_map": {
+          "type": "object",
+          "description": "Maps 'file:line' source keys to lists of IR line numbers.",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+
+    "SourceCorrelation": {
+      "type": "object",
+      "required": ["source_line","source_text","construct_type"],
+      "additionalProperties": true,
+      "properties": {
+        "source_line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-based line number in the Fortran source."
+        },
+        "source_col":  { "type": "integer", "minimum": 1, "default": 1 },
+        "source_text": { "type": "string",
+                         "description": "The Fortran source line text." },
+        "construct_type": {
+          "type": "string",
+          "description": "Semantic category of the construct on this line.",
+          "examples": ["do_concurrent","array_assignment","where_block",
+                       "forall","polymorphism","coarray_access","matmul_intrinsic",
+                       "recursive_proc","procedure_call","assignment","if_stmt"]
+        },
+        "parse_tree_nodes": {
+          "type": "array", "items": { "type": "string" },
+          "description": "Parse tree node types correlated to this line."
+        },
+        "fir_ops": {
+          "type": "array", "items": { "type": "string" },
+          "description": "FIR dialect operations correlated to this line."
+        },
+        "hlfir_ops": {
+          "type": "array", "items": { "type": "string" },
+          "description": "HLFIR dialect operations correlated to this line."
+        },
+        "llvm_ir_lines": {
+          "type": "array", "items": { "type": "string" },
+          "description": "LLVM IR instructions correlated to this line."
+        },
+        "lowering_notes": {
+          "type": "string",
+          "description": "Technical explanation of the lowering transformation."
+        }
+      }
+    }
+  }
+}

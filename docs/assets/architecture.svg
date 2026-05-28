@@ -1,0 +1,76 @@
+<svg width="860" height="340" viewBox="0 0 860 340" xmlns="http://www.w3.org/2000/svg" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#484f58"/>
+    </marker>
+  </defs>
+  <rect width="860" height="340" fill="#0d1117" rx="12"/>
+
+  <!-- Title -->
+  <text x="430" y="28" text-anchor="middle" fill="#8b949e" font-size="11" font-weight="700" letter-spacing="1">SYSTEM ARCHITECTURE</text>
+
+  <!-- === ROW 1: INPUT === -->
+  <!-- Fortran .f90 -->
+  <rect x="180" y="50" width="140" height="50" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="250" y="72" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="700">Fortran Source</text>
+  <text x="250" y="87" text-anchor="middle" fill="#484f58" font-size="9">.f90 — any construct</text>
+
+  <!-- Pregenerated JSON -->
+  <rect x="540" y="50" width="140" height="50" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="610" y="72" text-anchor="middle" fill="#8b949e" font-size="10" font-weight="700">Pre-generated Traces</text>
+  <text x="610" y="87" text-anchor="middle" fill="#484f58" font-size="9">samples/pregenerated/*.json</text>
+
+  <!-- Arrows to ingress -->
+  <line x1="250" y1="102" x2="250" y2="130" stroke="#484f58" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="610" y1="102" x2="610" y2="175" stroke="#484f58" stroke-width="1.2" marker-end="url(#arr)" stroke-dasharray="4,3"/>
+  <text x="625" y="142" fill="#484f58" font-size="8" font-style="italic">simulation</text>
+  <text x="625" y="152" fill="#484f58" font-size="8" font-style="italic">mode bypass</text>
+
+  <!-- === ROW 2: INGRESS ENGINE === -->
+  <rect x="140" y="132" width="220" height="56" rx="6" fill="#0f1a1a" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="250" y="155" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="700">Ingress Engine</text>
+  <text x="250" y="170" text-anchor="middle" fill="#2d7a3d" font-size="8">compiler_runner.py · subprocess hooks</text>
+  <text x="250" y="182" text-anchor="middle" fill="#1e5228" font-size="8">5 × flang-new invocations  —  -O0 -g</text>
+
+  <!-- Arrow to parsers -->
+  <line x1="250" y1="190" x2="250" y2="216" stroke="#484f58" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <!-- === ROW 3: PARSING LAYER === -->
+  <rect x="60" y="218" width="380" height="56" rx="6" fill="#1a1025" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="250" y="241" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="700">Stage Parsers + Correlation Engine</text>
+  <text x="250" y="256" text-anchor="middle" fill="#7a52b8" font-size="8">stage_parser.py  ·  #loc attr &amp; !DILocation matching</text>
+  <text x="250" y="268" text-anchor="middle" fill="#573d8a" font-size="8">correlation.py  ·  source_line ↔ IR ops per stage</text>
+
+  <!-- Arrow from pregenerated to parser layer -->
+  <line x1="538" y1="176" x2="444" y2="238" stroke="#484f58" stroke-width="1.2" marker-end="url(#arr)" stroke-dasharray="4,3"/>
+
+  <!-- Arrow from parsers to outputs -->
+  <line x1="250" y1="276" x2="250" y2="298" stroke="#484f58" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <!-- === ROW 4: OUTPUTS === -->
+  <!-- FastAPI -->
+  <rect x="40" y="300" width="130" height="30" rx="5" fill="#0a1a2e" stroke="#388bfd" stroke-width="1.5"/>
+  <text x="105" y="319" text-anchor="middle" fill="#388bfd" font-size="9" font-weight="700">FastAPI  :8001</text>
+
+  <!-- CLI -->
+  <rect x="185" y="300" width="130" height="30" rx="5" fill="#0a2e0a" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="250" y="319" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="700">CLI  tracer/cli.py</text>
+
+  <!-- React UI -->
+  <rect x="330" y="300" width="130" height="30" rx="5" fill="#1a1a00" stroke="#e3b341" stroke-width="1.5"/>
+  <text x="395" y="319" text-anchor="middle" fill="#e3b341" font-size="9" font-weight="700">React UI  :5173</text>
+
+  <!-- AI Layer -->
+  <rect x="560" y="218" width="260" height="112" rx="6" fill="#1a0a1a" stroke="#bc8cff" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="690" y="242" text-anchor="middle" fill="#bc8cff" font-size="10" font-weight="700">Agentic Layer  (optional)</text>
+  <text x="690" y="258" text-anchor="middle" fill="#7a52b8" font-size="8">llm/analyst.py  ·  claude-sonnet-4-6</text>
+  <text x="690" y="273" text-anchor="middle" fill="#573d8a" font-size="8">Streaming SSE explanations per source line</text>
+  <text x="690" y="289" text-anchor="middle" fill="#573d8a" font-size="8">Acts as: LLVM Systems Engineer persona</text>
+  <text x="690" y="305" text-anchor="middle" fill="#3d2a6a" font-size="8">Optional: works without key (cached notes)</text>
+
+  <!-- Connection from FastAPI to AI -->
+  <line x1="442" y1="275" x2="558" y2="262" stroke="#484f58" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+
+  <!-- Labels -->
+  <text x="500" y="264" fill="#484f58" font-size="8" font-style="italic">ANTHROPIC_API_KEY</text>
+</svg>

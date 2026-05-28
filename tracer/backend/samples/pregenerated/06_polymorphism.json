@@ -1,0 +1,95 @@
+{
+  "id": "06_polymorphism",
+  "name": "Polymorphism & Dynamic Dispatch",
+  "description": "CLASS hierarchy, SELECT TYPE, vtable in FIR (fir.dispatch_table), indirect function pointer calls in LLVM IR",
+  "category": "polymorphism",
+  "complexity": "VERY_HIGH",
+  "fortran_standard": "F2003",
+  "key_patterns": ["fir.dispatch_table", "fir.dispatch", "SELECT TYPE → type descriptor checks", "indirect call via function pointer"],
+  "source": "subroutine print_shape_info(s)\n  class(Shape), intent(in) :: s\n  real :: a, per\n\n  a   = s%area()\n  per = s%perimeter()\n\n  SELECT TYPE (s)\n    TYPE IS (Circle)\n      print *, 'Circle: radius=', s%radius\n    TYPE IS (Rectangle)\n      print *, 'Rect: ', s%width, 'x', s%height\n    CLASS DEFAULT\n      print *, 'Shape: area=', a\n  END SELECT\nend subroutine print_shape_info",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  SubroutineSubprogram\n  | SubroutineStmt -> Name = 'print_shape_info'\n  | SpecificationPart\n  | | TypeDeclarationStmt (CLASS(Shape) intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 's'\n  | | TypeDeclarationStmt (REAL)\n  | | | EntityDecl -> ObjectName = 'a'\n  | | | EntityDecl -> ObjectName = 'per'\n  | ExecutionPart\n  | | ActionStmt -> AssignmentStmt\n  | | | Variable -> Name = 'a'\n  | | | Expr -> FunctionReference\n  | | | | DataRef -> PartRef -> Name = 's'\n  | | | | FieldSelector -> Name = 'area'\n  | | ActionStmt -> AssignmentStmt\n  | | | Variable -> Name = 'per'\n  | | | Expr -> FunctionReference\n  | | | | DataRef -> PartRef -> Name = 's'\n  | | | | FieldSelector -> Name = 'perimeter'\n  | | ExecutableConstruct -> SelectTypeConstruct\n  | | | SelectTypeStmt\n  | | | | Selector -> Name = 's'\n  | | | TypeGuardStmt\n  | | | | TypeSpec -> TypeIs -> DerivedTypeSpec -> Name = 'Circle'\n  | | | | PrintStmt ...\n  | | | TypeGuardStmt\n  | | | | TypeSpec -> TypeIs -> DerivedTypeSpec -> Name = 'Rectangle'\n  | | | | PrintStmt ...\n  | | | TypeGuardStmt -> ClassDefault\n  | | | | PrintStmt ...\n  | | | EndSelectTypeStmt\n  | EndSubroutineStmt -> Name = 'print_shape_info'",
+      "line_count": 34,
+      "key_ops": ["SelectTypeConstruct", "TypeGuardStmt", "FunctionReference (dynamic)", "FieldSelector (method)"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: print_shape_info\n  s:   CLASS(Shape)  intent=IntentIn  (polymorphic — carries type descriptor)\n  a:   REAL(4)  local\n  per: REAL(4)  local\n\nDynamic dispatch resolution:\n  s%area():\n    Static type: Shape  → procedure binding: area → shape_area\n    Dynamic type: unknown at compile time\n    Dispatch: VIRTUAL — fir.dispatch emitted (vtable lookup)\n  s%perimeter():\n    Dispatch: VIRTUAL — fir.dispatch emitted\n\nSELECT TYPE analysis:\n  Selector: 's' (CLASS(Shape), polymorphic)\n  Guards in order:\n    TYPE IS (Circle)   → exact type match: type descriptor == Circle%__vtable\n    TYPE IS (Rectangle)→ exact type match: type descriptor == Rectangle%__vtable\n    CLASS DEFAULT      → fallback: no descriptor match above\n  Implementation: runtime type descriptor comparison\n    s%__typeDescriptor == ADDR(Circle__typeDesc) → jump to Circle block\n    s%__typeDescriptor == ADDR(Rectangle__typeDesc) → jump to Rectangle block\n    else → CLASS DEFAULT block",
+      "line_count": 22,
+      "key_ops": ["s", "a", "per", "area", "perimeter", "vtable"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After FIR Lowering ***\nmodule @_QMshapes {\n\n  // Dispatch tables — one per type with bound procedures\n  fir.dispatch_table @_QDTshapesTShape {\n    fir.dt_entry area,      @_QPshape_area\n    fir.dt_entry perimeter, @_QPshape_perimeter\n  }\n  fir.dispatch_table @_QDTshapesTCircle extends @_QDTshapesTShape {\n    fir.dt_entry area,      @_QPcircle_area      // override\n    fir.dt_entry perimeter, @_QPcircle_perimeter // override\n  }\n  fir.dispatch_table @_QDTshapesTRectangle extends @_QDTshapesTShape {\n    fir.dt_entry area,      @_QPrect_area\n    fir.dt_entry perimeter, @_QPrect_perimeter\n  }\n\n  func.func @_QPprint_shape_info(\n      %arg0: !fir.class<!fir.type<@_QTshapesTShape>> {fir.bindc_name = \"s\", fir.in}\n  ) {\n    // Dynamic dispatch: fir.dispatch looks up method in vtable\n    %a   = fir.dispatch \"area\"(%arg0 : !fir.class<!fir.type<@_QTshapesTShape>>) -> f32\n    %per = fir.dispatch \"perimeter\"(%arg0 : !fir.class<!fir.type<@_QTshapesTShape>>) -> f32\n\n    // SELECT TYPE → runtime type descriptor comparisons\n    %is_circle = fir.is_present_and_same_type_as\n                   %arg0, @_QDTshapesTCircle : (!fir.class<...>, !fir.dispatch_table) -> i1\n\n    fir.if %is_circle {\n      // TYPE IS (Circle) block — s%radius accessible with concrete type\n      %circle_ref = fir.convert %arg0 : (!fir.class<...>) -> !fir.ref<!fir.type<@_QTshapesTCircle>>\n      %r_idx      = fir.field_index radius, !fir.type<@_QTshapesTCircle>\n      %r_ptr      = fir.coordinate_of %circle_ref, %r_idx : (...) -> !fir.ref<f32>\n      %radius     = fir.load %r_ptr : !fir.ref<f32>\n      // ... print\n    }\n\n    %is_rect = fir.is_present_and_same_type_as\n                 %arg0, @_QDTshapesTRectangle : (!fir.class<...>, !fir.dispatch_table) -> i1\n    fir.if %is_rect {\n      // TYPE IS (Rectangle) block\n      %rect_ref = fir.convert %arg0 : (!fir.class<...>) -> !fir.ref<!fir.type<@_QTshapesTRectangle>>\n      // ... access s%width, s%height\n    }\n    // CLASS DEFAULT handled by fall-through\n    return\n  }\n}\n#loc1 = loc(\"06_polymorphism.f90\":67:0)\n#loc2 = loc(\"06_polymorphism.f90\":72:5)\n#loc3 = loc(\"06_polymorphism.f90\":75:5)",
+      "line_count": 50,
+      "key_ops": ["fir.dispatch_table", "fir.dt_entry", "fir.dispatch", "fir.is_present_and_same_type_as", "fir.if", "fir.convert", "fir.field_index", "fir.coordinate_of"],
+      "loc_map": {
+        "06_polymorphism.f90:72": [19, 20, 21],
+        "06_polymorphism.f90:73": [22],
+        "06_polymorphism.f90:75": [23, 24, 25, 26, 27, 28, 29]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After HLFIR Lowering ***\nmodule @_QMshapes {\n\n  // Type descriptor globals — one per concrete type\n  fir.global @_QDTshapesTShape_desc constant\n      : !fir.type<@_QTshapes__TypeDesc_Shape> { ... }\n  fir.global @_QDTshapesTCircle_desc constant\n      : !fir.type<@_QTshapes__TypeDesc_Circle> { ... }\n  fir.global @_QDTshapesTRectangle_desc constant\n      : !fir.type<@_QTshapes__TypeDesc_Rectangle> { ... }\n\n  func.func @_QPprint_shape_info(\n      %arg0: !fir.class<!fir.type<@_QTshapesTShape>> {fir.bindc_name = \"s\", fir.in}\n  ) {\n    %s:2 = hlfir.declare %arg0\n        {fortran_attrs = #fir.var_attrs<intent_in>, uniq_name = \"_QFprint_shape_infoEs\"}\n        : (!fir.class<!fir.type<@_QTshapesTShape>>)\n       -> (!fir.class<!fir.type<@_QTshapesTShape>>,\n           !fir.class<!fir.type<@_QTshapesTShape>>)\n\n    // Virtual dispatch: loads function pointer from the type descriptor\n    // The class box carries a pointer to the concrete type's dispatch table\n    %a   = fir.dispatch \"area\"(%s#0 : !fir.class<!fir.type<@_QTshapesTShape>>) -> f32\n    %per = fir.dispatch \"perimeter\"(%s#0 : !fir.class<!fir.type<@_QTshapesTShape>>) -> f32\n\n    // SELECT TYPE guard comparison — extracts type descriptor from the box\n    %type_desc = fir.box_tdesc %s#0 : (!fir.class<...>) -> !fir.tdesc<...>\n\n    %circle_tdesc  = fir.address_of(@_QDTshapesTCircle_desc)  : !fir.ref<!fir.type<...>>\n    %rect_tdesc    = fir.address_of(@_QDTshapesTRectangle_desc): !fir.ref<!fir.type<...>>\n\n    %is_circle = fir.call @_FortranAClassIs(%type_desc, %circle_tdesc) : (...) -> i1\n    fir.if %is_circle { ... }\n    %is_rect   = fir.call @_FortranAClassIs(%type_desc, %rect_tdesc)   : (...) -> i1\n    fir.if %is_rect { ... }\n\n    return\n  }\n}\n#loc1 = loc(\"06_polymorphism.f90\":67:0)",
+      "line_count": 42,
+      "key_ops": ["hlfir.declare", "fir.dispatch", "fir.box_tdesc", "fir.address_of", "fir.call (@_FortranAClassIs)", "fir.if"],
+      "loc_map": {
+        "06_polymorphism.f90:72": [21, 22, 23],
+        "06_polymorphism.f90:75": [25, 26, 27, 28, 29, 30, 31]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '06_polymorphism.f90'\n; CLASS(Shape) is represented as a Fortran descriptor box:\n;   struct { ptr data, ptr type_descriptor, ... }\n\n; External runtime for type guard comparisons\ndeclare i1 @_FortranAClassIs(ptr, ptr)\n\ndefine void @_QPprint_shape_info(ptr nocapture readonly %0) #0 !dbg !5 {\nentry:\n  ; Load the function pointer for 'area' from the type descriptor\n  ; Box layout: { data_ptr[0], type_desc_ptr[8], ... }\n  %tdesc_ptr  = getelementptr inbounds %Descriptor, ptr %0, i64 0, i32 1, !dbg !10\n  %tdesc      = load ptr, ptr %tdesc_ptr, align 8, !dbg !10\n\n  ; Virtual dispatch: load vtable entry for 'area' at fixed offset\n  %area_slot  = getelementptr inbounds %TypeDescriptor, ptr %tdesc, i64 0, i32 3, !dbg !10\n  %area_fptr  = load ptr, ptr %area_slot, align 8, !dbg !10\n  %a_val      = call float %area_fptr(ptr %0), !dbg !10          ; indirect call\n\n  %peri_slot  = getelementptr inbounds %TypeDescriptor, ptr %tdesc, i64 0, i32 4, !dbg !11\n  %peri_fptr  = load ptr, ptr %peri_slot, align 8, !dbg !11\n  %per_val    = call float %peri_fptr(ptr %0), !dbg !11          ; indirect call\n\n  ; SELECT TYPE — runtime type descriptor comparison\n  %circle_desc = load ptr, @_QDTshapesTCircle_desc, align 8, !dbg !12\n  %is_circle   = call i1 @_FortranAClassIs(ptr %tdesc, ptr %circle_desc), !dbg !12\n  br i1 %is_circle, label %circle_block, label %check_rect, !dbg !12\n\ncircle_block:\n  ; TYPE IS (Circle): safe downcast, access s%radius at concrete offset\n  %r_ptr   = getelementptr inbounds %Circle, ptr %0, i64 0, i32 1, !dbg !13\n  %radius  = load float, ptr %r_ptr, align 4, !dbg !13\n  ; ... call _FortranAioOutputReal32, etc.\n  br label %select_end\n\ncheck_rect:\n  %rect_desc = load ptr, @_QDTshapesTRectangle_desc, align 8\n  %is_rect   = call i1 @_FortranAClassIs(ptr %tdesc, ptr %rect_desc)\n  br i1 %is_rect, label %rect_block, label %default_block\n\nrect_block:\n  ; TYPE IS (Rectangle)\n  %w_ptr = getelementptr inbounds %Rectangle, ptr %0, i64 0, i32 1, !dbg !14\n  %width = load float, ptr %w_ptr, align 4, !dbg !14\n  br label %select_end\n\ndefault_block:\n  ; CLASS DEFAULT\n  br label %select_end\n\nselect_end:\n  ret void, !dbg !15\n}\n\n; KEY INSIGHT: fir.dispatch_table entries map to function pointers stored at\n; fixed offsets within the type descriptor struct. Dynamic dispatch = two GEPs\n; (box → type_desc, type_desc → function_slot) + one indirect call.\n\n!5  = distinct !DISubprogram(name: \"print_shape_info\", line: 67)\n!10 = !DILocation(line: 72, column: 5, scope: !5)\n!11 = !DILocation(line: 73, column: 5, scope: !5)\n!12 = !DILocation(line: 75, column: 5, scope: !5)\n!13 = !DILocation(line: 77, column: 9, scope: !5)\n!14 = !DILocation(line: 80, column: 9, scope: !5)\n!15 = !DILocation(line: 84, column: 1, scope: !5)",
+      "line_count": 65,
+      "key_ops": ["getelementptr", "load", "call (indirect)", "br", "icmp", "ret"],
+      "loc_map": {
+        "06_polymorphism.f90:72": [11, 12, 13, 14, 15, 16],
+        "06_polymorphism.f90:75": [21, 22, 23, 24, 25, 26, 27]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 5,
+      "source_col": 3,
+      "source_text": "  a   = s%area()",
+      "construct_type": "polymorphism",
+      "parse_tree_nodes": ["AssignmentStmt", "FunctionReference (dynamic)", "FieldSelector (area)"],
+      "fir_ops": ["fir.dispatch \"area\"", "fir.dispatch_table"],
+      "hlfir_ops": ["fir.dispatch \"area\"", "hlfir.declare (CLASS type)"],
+      "llvm_ir_lines": ["getelementptr (box → tdesc)", "load (vtable slot)", "call (indirect)"],
+      "lowering_notes": "CLASS(Shape) variables carry a Fortran descriptor box containing a pointer to the concrete type's dispatch table. fir.dispatch in FIR encodes the method name symbolically; it lowers to two GEPs (box→type_descriptor, type_descriptor→method_slot) and an indirect call in LLVM IR. No inlining is possible without devirtualization."
+    },
+    {
+      "source_line": 8,
+      "source_col": 3,
+      "source_text": "  SELECT TYPE (s)",
+      "construct_type": "select_type",
+      "parse_tree_nodes": ["SelectTypeConstruct", "TypeGuardStmt × 3"],
+      "fir_ops": ["fir.is_present_and_same_type_as", "fir.box_tdesc", "fir.if (per guard)"],
+      "hlfir_ops": ["fir.box_tdesc", "fir.call @_FortranAClassIs", "fir.if"],
+      "llvm_ir_lines": ["call @_FortranAClassIs × 2", "br (chain of guards)", "getelementptr (downcast)"],
+      "lowering_notes": "SELECT TYPE compiles to a linear chain of type descriptor comparisons using the _FortranAClassIs runtime function. Each TYPE IS guard becomes a call + conditional branch. On match, the selector is statically downcast (a GEP reinterpretation) to the concrete type, granting direct access to type-specific components without box overhead."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "Virtual Dispatch: fir.dispatch → indirect call",
+      "description": "Fortran type-bound procedure calls on CLASS variables emit fir.dispatch in FIR, which lowers to two GEP+load sequences to navigate box → type_descriptor → vtable slot, then an indirect LLVM call"
+    },
+    {
+      "name": "SELECT TYPE → @_FortranAClassIs chain",
+      "description": "SELECT TYPE guards lower to a sequential chain of @_FortranAClassIs runtime calls, each comparing the box's type descriptor pointer against a statically-known type descriptor global"
+    },
+    {
+      "name": "CLASS Box Layout",
+      "description": "Polymorphic CLASS(T) variables carry a Fortran descriptor struct containing data_ptr, type_descriptor_ptr, rank, dimensions — enabling runtime type introspection without separate vtable slots per variable"
+    }
+  ]
+}

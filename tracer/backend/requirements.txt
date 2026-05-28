@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+anthropic
+pydantic
+python-dotenv
+httpx
+sse-starlette
+aiofiles

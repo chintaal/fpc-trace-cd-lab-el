@@ -1,0 +1,87 @@
+{
+  "id": "02_do_concurrent",
+  "name": "DO CONCURRENT Loop",
+  "description": "Parallel loop with independence guarantee — omp.wsloop in FIR, auto-vectorizable LLVM IR",
+  "category": "concurrency",
+  "complexity": "HIGH",
+  "fortran_standard": "F2008",
+  "key_patterns": ["omp.parallel", "omp.wsloop", "fir.do_loop unordered", "LLVM vectorized loop"],
+  "source": "subroutine do_concurrent_scale(a, b, scale, n)\n  implicit none\n  integer, intent(in)  :: n\n  real,    intent(in)  :: b(n), scale\n  real,    intent(out) :: a(n)\n  integer :: i\n\n  DO CONCURRENT (i = 1:n)\n    a(i) = b(i) * scale\n  END DO\n\nend subroutine do_concurrent_scale",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  SubroutineSubprogram\n  | SubroutineStmt -> Name = 'do_concurrent_scale'\n  | SpecificationPart\n  | | ImplicitPart -> ImplicitStmt -> ImplicitNoneStmt\n  | | TypeDeclarationStmt (INTEGER intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'n'\n  | | TypeDeclarationStmt (REAL intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'b' (shape: n)\n  | | | EntityDecl -> ObjectName = 'scale'\n  | | TypeDeclarationStmt (REAL intent=IntentOut)\n  | | | EntityDecl -> ObjectName = 'a' (shape: n)\n  | | TypeDeclarationStmt (INTEGER)\n  | | | EntityDecl -> ObjectName = 'i'\n  | ExecutionPart\n  | | ExecutionPartConstruct -> ExecutableConstruct -> DoConstruct\n  | | | NonLabelDoStmt -> LoopControl -> ConcurrentControl\n  | | | | ConcurrentHeader\n  | | | | | ConcurrentControl -> IndexName = 'i'\n  | | | | | ConcurrentControl -> ConcurrentLimit -> Name = '1'\n  | | | | | ConcurrentControl -> ConcurrentLimit -> Name = 'n'\n  | | | Block -> ExecutionPartConstruct -> ExecutableConstruct -> ActionStmt\n  | | | | AssignmentStmt\n  | | | | | Variable -> Designator -> DataRef -> PartRef\n  | | | | | | Name = 'a'\n  | | | | | | SectionSubscriptList -> SectionSubscript -> Name = 'i'\n  | | | | | Expr -> Level2Expr -> MultOperand\n  | | | | | | Level1Expr -> PrimaryExpr -> Designator -> DataRef -> PartRef\n  | | | | | | | Name = 'b'\n  | | | | | | | SectionSubscriptList -> SectionSubscript -> Name = 'i'\n  | | | | | | MulOp = '*'\n  | | | | | | Level1Expr -> PrimaryExpr -> Designator -> DataRef -> Name = 'scale'\n  | | | EndDoStmt\n  | EndSubroutineStmt -> Name = 'do_concurrent_scale'",
+      "line_count": 36,
+      "key_ops": ["DoConstruct", "ConcurrentControl", "ConcurrentHeader", "AssignmentStmt"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: do_concurrent_scale\n  a:     rank=1 REAL(4)    intent=IntentOut  shape=(1:n)\n  b:     rank=1 REAL(4)    intent=IntentIn   shape=(1:n)\n  scale: rank=0 REAL(4)    intent=IntentIn\n  n:     rank=0 INTEGER(4) intent=IntentIn\n  i:     rank=0 INTEGER(4) local\n\nDO CONCURRENT analysis:\n  Index variable: i (local scope to DO CONCURRENT body)\n  Range: 1 to n, stride 1\n  Independence: VERIFIED — no loop-carried dependences detected\n  Locality: i has implicit LOCAL_INIT attribute\n  Body references: a(i) write-only, b(i) read-only, scale read-only\n  Alias analysis: a and b are non-overlapping dummy args → safe for parallel execution",
+      "line_count": 15,
+      "key_ops": ["a", "b", "scale", "i"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After LowerHLFIR (fir-lower-hlfir) ***\n// With -fopenmp: DO CONCURRENT emits omp dialect\nmodule @_QMdo_concurrent_scale {\n  func.func @_QPdo_concurrent_scale(\n      %arg0: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"a\", fir.inout},\n      %arg1: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"b\", fir.in},\n      %arg2: !fir.ref<f32>               {fir.bindc_name = \"scale\", fir.in},\n      %arg3: !fir.ref<i32>               {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %c1     = arith.constant 1 : index\n    %n_val  = fir.load %arg3 : !fir.ref<i32>\n    %n_idx  = fir.convert %n_val : (i32) -> index\n    %scale  = fir.load %arg2 : !fir.ref<f32>\n    %shape  = fir.shape %n_idx : (index) -> !fir.shape<1>\n    %b_arr  = fir.array_load %arg1(%shape) : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> !fir.array<?xf32>\n    %a_arr  = fir.array_load %arg0(%shape) : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> !fir.array<?xf32>\n\n    // unordered attribute is the FIR encoding of DO CONCURRENT's\n    // independence guarantee — enables loop transformations\n    %result = fir.do_loop %iv = %c1 to %n_idx step %c1\n                  unordered iter_args(%acc = %a_arr) -> (!fir.array<?xf32>) {\n      %b_el  = fir.array_fetch %b_arr, %iv : (!fir.array<?xf32>, index) -> f32\n      %prod  = arith.mulf %b_el, %scale fastmath<contract> : f32\n      %a_upd = fir.array_update %acc, %prod, %iv : (!fir.array<?xf32>, f32, index) -> !fir.array<?xf32>\n      fir.result %a_upd : !fir.array<?xf32>\n    }\n    fir.array_merge_store %a_arr, %result to %arg0\n        : !fir.array<?xf32>, !fir.array<?xf32>, !fir.ref<!fir.array<?xf32>>\n    return\n  }\n}\n\n// With -fopenmp flag the loop becomes:\n// omp.parallel {\n//   omp.wsloop for (%iv : index = %c1 to %n_idx step %c1) {\n//     ... body ...\n//     omp.yield\n//   }\n//   omp.terminator\n// }",
+      "line_count": 42,
+      "key_ops": ["fir.do_loop", "fir.array_load", "fir.array_fetch", "fir.array_update", "arith.mulf"],
+      "loc_map": {
+        "02_do_concurrent.f90:8": [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After HLFIR Lowering ***\nmodule @_QMdo_concurrent_scale {\n  func.func @_QPdo_concurrent_scale(\n      %arg0: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"a\", fir.inout},\n      %arg1: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"b\", fir.in},\n      %arg2: !fir.ref<f32>               {fir.bindc_name = \"scale\", fir.in},\n      %arg3: !fir.ref<i32>               {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %0 = fir.load %arg3 : !fir.ref<i32>\n    %1 = fir.convert %0 : (i32) -> index\n    %shape = fir.shape %1 : (index) -> !fir.shape<1>\n\n    %a:2 = hlfir.declare %arg0(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_out>, uniq_name = \"_QFdo_concurrent_scaleEa\"}\n        : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> (!fir.box<!fir.array<?xf32>>, !fir.ref<!fir.array<?xf32>>)\n\n    %b:2 = hlfir.declare %arg1(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_in>, uniq_name = \"_QFdo_concurrent_scaleEb\"}\n        : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> (!fir.box<!fir.array<?xf32>>, !fir.ref<!fir.array<?xf32>>)\n\n    %scale:2 = hlfir.declare %arg2\n        {fortran_attrs = #fir.var_attrs<intent_in>, uniq_name = \"_QFdo_concurrent_scaleEscale\"}\n        : (!fir.ref<f32>) -> (!fir.ref<f32>, !fir.ref<f32>)\n\n    // DO CONCURRENT represented as hlfir.elemental with 'unordered'\n    // This preserves the independence guarantee through all HLFIR passes\n    %expr = hlfir.elemental %shape unordered\n        : (!fir.shape<1>) -> !hlfir.expr<?xf32> {\n    ^bb0(%i: index):\n      %b_el    = hlfir.apply %b#0, %i : (!fir.box<!fir.array<?xf32>>, index) -> f32\n      %sc_val  = fir.load %scale#0 : !fir.ref<f32>\n      %product = arith.mulf %b_el, %sc_val fastmath<contract> : f32\n      hlfir.yield_element %product : f32\n    }\n    hlfir.assign %expr to %a#0 : !hlfir.expr<?xf32>, !fir.box<!fir.array<?xf32>>\n    hlfir.destroy %expr : !hlfir.expr<?xf32>\n    return\n  }\n}",
+      "line_count": 40,
+      "key_ops": ["hlfir.declare", "hlfir.elemental", "hlfir.apply", "arith.mulf", "hlfir.yield_element", "hlfir.assign"],
+      "loc_map": {
+        "02_do_concurrent.f90:8": [26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '02_do_concurrent.f90'\nsource_filename = \"02_do_concurrent.f90\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\n; The 'unordered' attribute enables LLVM to auto-vectorize this loop\n; with -O2: expect <4 x float> operations in vectorized body\ndefine void @_QPdo_concurrent_scale(\n    ptr nocapture %0,           ; a(:)\n    ptr nocapture readonly %1,  ; b(:)\n    ptr nocapture readonly %2,  ; scale\n    ptr nocapture readonly %3   ; n\n) #0 !dbg !5 {\nentry:\n  %scale = load float, ptr %2, align 4, !dbg !10\n  %n_val = load i32, ptr %3, align 4, !dbg !10\n  %n_ext = sext i32 %n_val to i64, !dbg !10\n  %guard = icmp sgt i64 %n_ext, 0, !dbg !11\n  br i1 %guard, label %loop.ph, label %exit, !dbg !11\n\nloop.ph:\n  ; LLVM recognizes this is a safe-to-vectorize counted loop\n  ; because the unordered attribute removed the sequential constraint\n  br label %loop, !dbg !12\n\nloop:                           ; preds = %loop.ph, %loop\n  %iv = phi i64 [ 0, %loop.ph ], [ %iv.next, %loop ], !dbg !12\n  %b_ptr  = getelementptr inbounds float, ptr %1, i64 %iv, !dbg !12\n  %b_val  = load float, ptr %b_ptr, align 4, !dbg !12\n  %prod   = fmul contract float %b_val, %scale, !dbg !12\n  %a_ptr  = getelementptr inbounds float, ptr %0, i64 %iv, !dbg !12\n  store float %prod, ptr %a_ptr, align 4, !dbg !12\n  %iv.next = add nuw nsw i64 %iv, 1, !dbg !12\n  %done    = icmp eq i64 %iv.next, %n_ext, !dbg !12\n  br i1 %done, label %exit, label %loop, !dbg !12\n\nexit:\n  ret void, !dbg !13\n}\n\n; With -O2 the loop body becomes:\n; %bvec = load <4 x float>, ptr ..., align 4\n; %pvec = fmul <4 x float> %bvec, %svec\n; store <4 x float> %pvec, ptr ..., align 4\n\nattributes #0 = { nounwind \"frame-pointer\"=\"none\" }\n\n!5  = distinct !DISubprogram(name: \"do_concurrent_scale\", line: 1)\n!10 = !DILocation(line: 3, column: 3, scope: !5)\n!11 = !DILocation(line: 8, column: 3, scope: !5)\n!12 = !DILocation(line: 9, column: 5, scope: !5)\n!13 = !DILocation(line: 12, column: 1, scope: !5)",
+      "line_count": 52,
+      "key_ops": ["getelementptr", "load", "fmul", "store", "br", "phi", "icmp"],
+      "loc_map": {
+        "02_do_concurrent.f90:8": [23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 8,
+      "source_col": 3,
+      "source_text": "  DO CONCURRENT (i = 1:n)",
+      "construct_type": "do_concurrent",
+      "parse_tree_nodes": ["DoConstruct", "ConcurrentControl", "ConcurrentHeader"],
+      "fir_ops": ["fir.do_loop unordered", "fir.array_load", "fir.array_fetch", "fir.array_update"],
+      "hlfir_ops": ["hlfir.elemental unordered", "hlfir.apply", "hlfir.yield_element"],
+      "llvm_ir_lines": ["phi", "getelementptr", "load", "fmul", "store", "br"],
+      "lowering_notes": "DO CONCURRENT's independence guarantee is encoded as the 'unordered' attribute on fir.do_loop and hlfir.elemental. This survives all HLFIR→FIR→LLVM passes and enables LLVM's auto-vectorizer to legally apply SIMD transformations."
+    },
+    {
+      "source_line": 9,
+      "source_col": 5,
+      "source_text": "    a(i) = b(i) * scale",
+      "construct_type": "array_assignment",
+      "parse_tree_nodes": ["AssignmentStmt", "PartRef", "MulOp"],
+      "fir_ops": ["fir.array_fetch", "arith.mulf", "fir.array_update"],
+      "hlfir_ops": ["hlfir.apply", "arith.mulf", "hlfir.yield_element"],
+      "llvm_ir_lines": ["load", "fmul", "store"],
+      "lowering_notes": "The element-wise multiply inside DO CONCURRENT body lowers to arith.mulf in MLIR, then fmul in LLVM IR. The 'contract' fast-math flag allows FMA fusion."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "DO CONCURRENT → Unordered Loop",
+      "description": "Fortran DO CONCURRENT independence guarantee encoded as fir.do_loop 'unordered' attribute, enabling LLVM vectorizer to apply SIMD transformations without alias checks"
+    },
+    {
+      "name": "OpenMP Parallel Region (with -fopenmp)",
+      "description": "With OpenMP enabled, DO CONCURRENT emits omp.parallel { omp.wsloop } wrapping the body, mapping to libgomp parallel_for at runtime"
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+# Node / frontend
+node_modules/
+tracer/frontend/dist/
+tracer/backend/static/
+
+# Build & tooling
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Snapshots & generated demos (regenerate locally)
+.snapshots/
+demos/*.json
+demos/*.html
+!demos/.gitkeep
+
+# llvm / Flang (external tree — never commit)
+llvm-project/
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# IDE / editor backups
+.idea/
+.vscode/
+*.swp
+*.bak
+.DS_Store
+
+# Logs
+*.log
+/tmp/
+
+# AI coding agents / assistants (local config & memory — do not commit)
+.claude/
+.claude
+CLAUDE.md
+.cursor/
+.cursorrules
+.cursorignore
+AGENTS.md
+.aider*
+.continue/
+.windsurf/
+.codex/
+.cline/
+.factory/
+.openhands/
+.devin/
+.amazonq/
+agent-transcripts/
+
+

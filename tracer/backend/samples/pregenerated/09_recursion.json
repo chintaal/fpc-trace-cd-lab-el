@@ -1,0 +1,92 @@
+{
+  "id": "09_recursion",
+  "name": "Recursive Function (Factorial / Fibonacci)",
+  "description": "Stack frame allocation via alloca, absence of TCO in Flang, call graph in FIR, phi nodes for conditional result selection",
+  "category": "procedures",
+  "complexity": "MEDIUM",
+  "fortran_standard": "F90",
+  "key_patterns": ["alloca per frame", "fir.call (recursive)", "no tail-call optimization", "fir.if → br in LLVM IR"],
+  "source": "recursive function factorial(n) result(r)\n  integer, intent(in) :: n\n  integer(kind=8)     :: r\n  if (n <= 1) then\n    r = 1\n  else\n    r = n * factorial(n - 1)\n  end if\nend function factorial",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  FunctionSubprogram\n  | FunctionStmt -> PrefixSpec = RECURSIVE\n  | | Name = 'factorial'\n  | | DummyArgList -> DummyArg -> Name = 'n'\n  | | Suffix -> ResultClause -> Name = 'r'\n  | SpecificationPart\n  | | TypeDeclarationStmt (INTEGER intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'n'\n  | | TypeDeclarationStmt (INTEGER(KIND=8))\n  | | | EntityDecl -> ObjectName = 'r'  ← result variable\n  | ExecutionPart\n  | | IfConstruct\n  | | | IfThenStmt\n  | | | | Expr -> Level4Expr -> RelOp\n  | | | | | Level3Expr -> Name = 'n'\n  | | | | | RelOp = '.LE.'\n  | | | | | Level3Expr -> IntLiteralConstant = '1'\n  | | | Block\n  | | | | AssignmentStmt -> Name='r' = IntLiteralConstant='1'\n  | | | ElseStmt\n  | | | Block\n  | | | | AssignmentStmt\n  | | | | | Variable -> Name = 'r'\n  | | | | | Expr -> Level2Expr -> MultOperand\n  | | | | | | Level1Expr -> PrimaryExpr -> Name = 'n'\n  | | | | | | MulOp = '*'\n  | | | | | | FunctionReference\n  | | | | | | | Name = 'factorial'\n  | | | | | | | SectionSubscriptList -> Expr (n - 1)\n  | | | EndIfStmt\n  | EndFunctionStmt",
+      "line_count": 32,
+      "key_ops": ["FunctionSubprogram (RECURSIVE)", "IfConstruct", "FunctionReference (recursive)", "ResultClause"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: factorial\n  n:  INTEGER(4) intent=IntentIn  rank=0\n  r:  INTEGER(8) local (result variable)  rank=0\n  factorial: FunctionEntityDetails  RECURSIVE  result=r\n\nRecursion analysis:\n  Self-call: factorial(n-1)\n    Argument: n-1 (scalar expression, no aliasing with dummy n)\n    Result: INTEGER(8) — same as r\n  Tail call? NO — result is used in multiplication: r = n * factorial(n-1)\n    Therefore TCO is NOT applicable; each call allocates a new stack frame\n  Stack depth: O(n) — proportional to argument value\n  Base case: n <= 1 → r = 1 (no recursive call)\n  Flang DOES NOT emit MUSTTAIL or any tail-call optimization attribute\n    even if the programmer writes a tail-recursive form",
+      "line_count": 15,
+      "key_ops": ["n", "r", "factorial (self-reference)"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After InlineElementals ***\nmodule @_QMrecursion_demo {\n  func.func @_QPfactorial(%arg0: !fir.ref<i32> {fir.bindc_name = \"n\", fir.in}) -> i64 {\n\n    // Result variable r — allocated on the stack\n    %r_ref = fir.alloca i64 {bindc_name = \"r\", uniq_name = \"_QFfactorialEr\"}\n\n    %n_val = fir.load %arg0 : !fir.ref<i32>\n    %c1    = arith.constant 1 : i32\n\n    // if (n <= 1)\n    %cond  = arith.cmpi sle, %n_val, %c1 : i32\n\n    fir.if %cond {\n      // r = 1\n      %one64 = arith.constant 1 : i64\n      fir.store %one64 to %r_ref : !fir.ref<i64>\n    } else {\n      // r = n * factorial(n-1)\n      %n64   = fir.convert %n_val : (i32) -> i64\n\n      // Compute n-1\n      %n_m1  = arith.subi %n_val, %c1 : i32\n      %nm1_ref = fir.alloca i32        // temporary for the argument\n      fir.store %n_m1 to %nm1_ref : !fir.ref<i32>\n\n      // Recursive call — standard CALL instruction, no TCO\n      %recur = fir.call @_QPfactorial(%nm1_ref) : (!fir.ref<i32>) -> i64\n\n      %prod  = arith.muli %n64, %recur : i64\n      fir.store %prod to %r_ref : !fir.ref<i64>\n    }\n\n    %result = fir.load %r_ref : !fir.ref<i64>\n    return %result : i64\n  }\n}\n#loc1 = loc(\"09_recursion.f90\":10:0)\n#loc2 = loc(\"09_recursion.f90\":13:5)\n#loc3 = loc(\"09_recursion.f90\":16:5)\n#loc4 = loc(\"09_recursion.f90\":17:5)",
+      "line_count": 40,
+      "key_ops": ["fir.alloca (result r)", "arith.cmpi sle", "fir.if", "fir.call @_QPfactorial (recursive)", "arith.muli", "fir.load", "fir.store"],
+      "loc_map": {
+        "09_recursion.f90:13": [10, 11, 12, 13],
+        "09_recursion.f90:16": [15, 16, 17],
+        "09_recursion.f90:17": [19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After HLFIR Lowering ***\nmodule @_QMrecursion_demo {\n  func.func @_QPfactorial(%arg0: !fir.ref<i32> {fir.bindc_name = \"n\", fir.in}) -> i64 {\n\n    %n:2 = hlfir.declare %arg0\n        {fortran_attrs = #fir.var_attrs<intent_in>, uniq_name = \"_QFfactorialEn\"}\n        : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)\n\n    // Result variable — hlfir.declare as local allocatable scalar\n    %r_alloc = fir.alloca i64 {bindc_name = \"r\", uniq_name = \"_QFfactorialEr\"}\n    %r:2 = hlfir.declare %r_alloc\n        {uniq_name = \"_QFfactorialEr\"}\n        : (!fir.ref<i64>) -> (!fir.ref<i64>, !fir.ref<i64>)\n\n    %n_val = fir.load %n#0 : !fir.ref<i32>\n    %c1_i32 = arith.constant 1 : i32\n    %cond   = arith.cmpi sle, %n_val, %c1_i32 : i32\n\n    fir.if %cond {\n      %one64 = arith.constant 1 : i64\n      hlfir.assign %one64 to %r#0 : i64, !fir.ref<i64>\n    } else {\n      %n64   = fir.convert %n_val : (i32) -> i64\n      %n_m1  = arith.subi %n_val, %c1_i32 : i32\n      %nm1   = fir.alloca i32\n      fir.store %n_m1 to %nm1 : !fir.ref<i32>\n\n      // Recursive self-call — note: no 'tail' attribute\n      %recur = fir.call @_QPfactorial(%nm1) : (!fir.ref<i32>) -> i64\n\n      %prod  = arith.muli %n64, %recur : i64\n      hlfir.assign %prod to %r#0 : i64, !fir.ref<i64>\n    }\n\n    %result = fir.load %r#0 : !fir.ref<i64>\n    return %result : i64\n  }\n}\n#loc1 = loc(\"09_recursion.f90\":10:0)",
+      "line_count": 40,
+      "key_ops": ["hlfir.declare (n)", "hlfir.declare (r, local)", "fir.alloca", "fir.if", "fir.call @_QPfactorial", "hlfir.assign", "arith.muli"],
+      "loc_map": {
+        "09_recursion.f90:13": [16, 17, 18],
+        "09_recursion.f90:17": [22, 23, 24, 25, 26, 27, 28, 29]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '09_recursion.f90'\n\ndefine i64 @_QPfactorial(ptr nocapture readonly %0) #0 !dbg !5 {\nentry:\n  ; Each call allocates: n_argument_copy + r_result on stack\n  %n_m1_alloca = alloca i32, align 4    ; storage for n-1 argument to recursive call\n  %r_alloca    = alloca i64, align 8    ; result variable r\n\n  %n_val = load i32, ptr %0, align 4, !dbg !10\n  %cond  = icmp sle i32 %n_val, 1, !dbg !11\n  br i1 %cond, label %then_block, label %else_block, !dbg !11\n\nthen_block:                             ; n <= 1: r = 1\n  store i64 1, ptr %r_alloca, align 8, !dbg !12\n  br label %merge\n\nelse_block:                             ; r = n * factorial(n-1)\n  %n64   = sext i32 %n_val to i64, !dbg !13\n  %n_m1  = sub nsw i32 %n_val, 1, !dbg !13\n  store i32 %n_m1, ptr %n_m1_alloca, align 4, !dbg !13\n\n  ; Recursive call — note: no 'tail' or 'musttail' attribute\n  ; Each call pushes a new stack frame, depth = O(n)\n  %recur = call i64 @_QPfactorial(ptr %n_m1_alloca), !dbg !13\n\n  %prod  = mul nsw i64 %n64, %recur, !dbg !13\n  store i64 %prod, ptr %r_alloca, align 8, !dbg !13\n  br label %merge\n\nmerge:                                  ; phi to unify then/else paths\n  %r_val = load i64, ptr %r_alloca, align 8, !dbg !14\n  ret i64 %r_val, !dbg !14\n}\n\n; WHY NO TAIL CALL OPTIMIZATION:\n; The recursive call 'factorial(n-1)' appears as the RHS of a multiply:\n;   r = n * factorial(n-1)\n; This means the call result must be held in a register while 'n' is\n; also live. The current frame cannot be reused — TCO is illegal.\n; Even if written as a tail-recursive helper, Flang does not implement\n; Fortran-level TCO (unlike GCC's -foptimize-sibling-calls).\n\n!5  = distinct !DISubprogram(name: \"factorial\", line: 10)\n!10 = !DILocation(line: 11, column: 3, scope: !5)\n!11 = !DILocation(line: 13, column: 3, scope: !5)\n!12 = !DILocation(line: 14, column: 5, scope: !5)\n!13 = !DILocation(line: 16, column: 5, scope: !5)\n!14 = !DILocation(line: 18, column: 1, scope: !5)",
+      "line_count": 56,
+      "key_ops": ["alloca (r, n_m1)", "load", "icmp sle", "br", "sext", "sub", "call @_QPfactorial (recursive)", "mul", "store", "ret"],
+      "loc_map": {
+        "09_recursion.f90:13": [8, 9, 10, 11],
+        "09_recursion.f90:16": [14, 15, 16, 17, 18, 19],
+        "09_recursion.f90:17": [20, 21, 22, 23, 24, 25]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 7,
+      "source_col": 5,
+      "source_text": "    r = n * factorial(n - 1)",
+      "construct_type": "recursive_proc",
+      "parse_tree_nodes": ["AssignmentStmt", "FunctionReference (factorial, recursive)", "MultOperand"],
+      "fir_ops": ["fir.alloca (n-1 temp)", "fir.call @_QPfactorial", "arith.muli", "fir.store"],
+      "hlfir_ops": ["fir.alloca", "fir.call @_QPfactorial", "arith.muli", "hlfir.assign"],
+      "llvm_ir_lines": ["alloca (r, n_m1)", "sub (n-1)", "store (n-1)", "call @_QPfactorial (no tail)", "mul nsw"],
+      "lowering_notes": "The recursive call to factorial(n-1) cannot be tail-call optimized because its result is immediately consumed in a multiply instruction (n * result). Flang emits a standard call without 'tail' or 'musttail' annotation. Each invocation allocates two stack slots: one for the n-1 argument copy (required since Flang passes by reference) and one for the result variable r. Stack depth grows linearly with n."
+    },
+    {
+      "source_line": 4,
+      "source_col": 3,
+      "source_text": "  if (n <= 1) then",
+      "construct_type": "if_stmt",
+      "parse_tree_nodes": ["IfConstruct", "IfThenStmt", "RelOp (.LE.)"],
+      "fir_ops": ["arith.cmpi sle", "fir.if"],
+      "hlfir_ops": ["arith.cmpi sle", "fir.if"],
+      "llvm_ir_lines": ["icmp sle", "br (conditional)"],
+      "lowering_notes": "The IF construct lowers to fir.if in FIR (a structured two-region operation), then to an LLVM conditional branch. The 'merge' basic block at the end is not a phi node — instead both paths write to the stack-allocated %r_alloca then fall into the merge block for a load. This is a consequence of using an explicit result variable rather than SSA form."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "Recursive Call: No TCO in Flang",
+      "description": "Flang does not implement tail-call optimization. Every recursive call emits a standard LLVM call (not musttail), and each frame allocates stack space for the result variable and any argument temporaries"
+    },
+    {
+      "name": "Fortran Pass-by-Reference for Scalars",
+      "description": "Scalar arguments are passed as pointers (ptr/!fir.ref<i32>) per Fortran ABI. Recursive calls must allocate a fresh stack slot for each by-ref argument, contributing to the per-frame stack cost"
+    }
+  ]
+}

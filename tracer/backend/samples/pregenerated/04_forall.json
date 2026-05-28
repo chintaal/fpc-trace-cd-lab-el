@@ -1,0 +1,94 @@
+{
+  "id": "04_forall",
+  "name": "FORALL Parallel Assignment (F95)",
+  "description": "Multi-index parallel assignment with RHS-before-LHS semantics — nested fir.do_loop structure vs DO CONCURRENT",
+  "category": "array_operations",
+  "complexity": "HIGH",
+  "fortran_standard": "F95",
+  "key_patterns": ["nested fir.do_loop", "MERGE intrinsic lowering", "two-phase copy semantics"],
+  "source": "subroutine forall_identity(a, n)\n  implicit none\n  integer, intent(in)  :: n\n  real,    intent(out) :: a(n,n)\n  integer :: i, j\n\n  FORALL (i = 1:n, j = 1:n)\n    a(i,j) = MERGE(1.0, 0.0, i == j)\n  END FORALL\n\nend subroutine forall_identity",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  SubroutineSubprogram\n  | SubroutineStmt -> Name = 'forall_identity'\n  | SpecificationPart\n  | | ImplicitPart -> ImplicitStmt -> ImplicitNoneStmt\n  | | TypeDeclarationStmt (INTEGER intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'n'\n  | | TypeDeclarationStmt (REAL intent=IntentOut)\n  | | | EntityDecl -> ObjectName = 'a' (shape: n,n)\n  | | TypeDeclarationStmt (INTEGER)\n  | | | EntityDecl -> ObjectName = 'i'\n  | | | EntityDecl -> ObjectName = 'j'\n  | ExecutionPart\n  | | ExecutionPartConstruct -> ExecutableConstruct\n  | | | ForallConstruct\n  | | | | ForallConstructStmt\n  | | | | | ForallHeader\n  | | | | | | TypeSpec -> INTEGER\n  | | | | | | ConcurrentControlList\n  | | | | | | | ConcurrentControl -> IndexName='i' lower=1 upper=Name='n'\n  | | | | | | | ConcurrentControl -> IndexName='j' lower=1 upper=Name='n'\n  | | | | ForallBodyConstruct -> ForallAssignmentStmt\n  | | | | | AssignmentStmt\n  | | | | | | Variable -> Designator -> DataRef -> PartRef\n  | | | | | | | Name = 'a'\n  | | | | | | | SectionSubscriptList\n  | | | | | | | | SectionSubscript -> Name = 'i'\n  | | | | | | | | SectionSubscript -> Name = 'j'\n  | | | | | | Expr -> FunctionReference\n  | | | | | | | Name = 'MERGE'\n  | | | | | | | SectionSubscriptList\n  | | | | | | | | RealLiteralConstant = '1.0'\n  | | | | | | | | RealLiteralConstant = '0.0'\n  | | | | | | | | Expr -> Level4Expr -> RelOp (i == j)\n  | | | | EndForallStmt\n  | EndSubroutineStmt -> Name = 'forall_identity'",
+      "line_count": 38,
+      "key_ops": ["ForallConstruct", "ForallHeader", "ForallBodyConstruct", "ConcurrentControl", "AssignmentStmt"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: forall_identity\n  a: rank=2 REAL(4)    intent=IntentOut  shape=(1:n,1:n)\n  n: rank=0 INTEGER(4) intent=IntentIn\n  i: rank=0 INTEGER(4) FORALL index (local scope)\n  j: rank=0 INTEGER(4) FORALL index (local scope)\n\nFORALL analysis:\n  Indices: i ∈ [1,n], j ∈ [1,n]  (total n² iterations)\n  Body LHS: a(i,j) — subscripts are affine functions of FORALL indices\n  Body RHS: MERGE(1.0, 0.0, i==j)\n    MERGE: elemental intrinsic, non-recursive, no side effects\n    i==j: logical scalar in FORALL body → evaluated per iteration\n  Two-phase semantics: ALL RHS expressions evaluated BEFORE any LHS assignment\n    Flang implements this via temporary array allocation when needed\n    Here: MERGE is pure → no temporary needed; emitted as nested loop\n  FORALL vs DO CONCURRENT:\n    DO CONCURRENT: independence is user-declared\n    FORALL: independence is compiler-verified from subscript analysis",
+      "line_count": 18,
+      "key_ops": ["a", "i", "j", "MERGE"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After InlineElementals ***\nmodule @_QMforall_identity {\n  func.func @_QPforall_identity(\n      %arg0: !fir.ref<!fir.array<?x?xf32>> {fir.bindc_name = \"a\", fir.inout},\n      %arg1: !fir.ref<i32>                 {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %c1   = arith.constant 1 : index\n    %c1_f = arith.constant 1.0 : f32\n    %c0_f = arith.constant 0.0 : f32\n    %n    = fir.load %arg1 : !fir.ref<i32>\n    %n_i  = fir.convert %n : (i32) -> index\n    %shape= fir.shape %n_i, %n_i : (index, index) -> !fir.shape<2>\n\n    %a_arr = fir.array_load %arg0(%shape)\n                 : (!fir.ref<!fir.array<?x?xf32>>, !fir.shape<2>) -> !fir.array<?x?xf32>\n\n    // Outer loop: i = 1..n\n    %r1 = fir.do_loop %i = %c1 to %n_i step %c1\n              iter_args(%a0 = %a_arr) -> (!fir.array<?x?xf32>) {\n\n      // Inner loop: j = 1..n\n      %r2 = fir.do_loop %j = %c1 to %n_i step %c1\n                iter_args(%a1 = %a0) -> (!fir.array<?x?xf32>) {\n\n        // MERGE(1.0, 0.0, i==j) — computed inline\n        %ieq = arith.cmpi eq, %i, %j : index\n        %sel = arith.select %ieq, %c1_f, %c0_f : f32\n\n        %a2  = fir.array_update %a1, %sel, %i, %j\n                   : (!fir.array<?x?xf32>, f32, index, index) -> !fir.array<?x?xf32>\n        fir.result %a2 : !fir.array<?x?xf32>\n      }\n      fir.result %r2 : !fir.array<?x?xf32>\n    }\n\n    fir.array_merge_store %a_arr, %r1 to %arg0\n        : !fir.array<?x?xf32>, !fir.array<?x?xf32>, !fir.ref<!fir.array<?x?xf32>>\n    return\n  }\n}\n#loc1 = loc(\"04_forall.f90\":4:0)\n#loc2 = loc(\"04_forall.f90\":8:3)\n#loc3 = loc(\"04_forall.f90\":9:5)",
+      "line_count": 44,
+      "key_ops": ["fir.do_loop", "fir.array_load", "arith.cmpi", "arith.select", "fir.array_update", "fir.array_merge_store"],
+      "loc_map": {
+        "04_forall.f90:8": [15, 16, 17, 18, 19, 20],
+        "04_forall.f90:9": [22, 23, 24, 25, 26, 27, 28, 29]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After HLFIR Lowering ***\nmodule @_QMforall_identity {\n  func.func @_QPforall_identity(\n      %arg0: !fir.ref<!fir.array<?x?xf32>> {fir.bindc_name = \"a\", fir.inout},\n      %arg1: !fir.ref<i32>                 {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %n    = fir.load %arg1 : !fir.ref<i32>\n    %n_i  = fir.convert %n : (i32) -> index\n    %shape= fir.shape %n_i, %n_i : (index, index) -> !fir.shape<2>\n\n    %a:2 = hlfir.declare %arg0(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_out>, uniq_name = \"_QFforall_identityEa\"}\n        : (!fir.ref<!fir.array<?x?xf32>>, !fir.shape<2>)\n       -> (!fir.box<!fir.array<?x?xf32>>, !fir.ref<!fir.array<?x?xf32>>)\n\n    // FORALL body expressed as a 2-D hlfir.elemental\n    // The 2-index header maps to a 2-D shape\n    %expr = hlfir.elemental %shape\n        : (!fir.shape<2>) -> !hlfir.expr<?x?xf32> {\n    ^bb0(%i: index, %j: index):\n      %c1_f  = arith.constant 1.0 : f32\n      %c0_f  = arith.constant 0.0 : f32\n      %ieq   = arith.cmpi eq, %i, %j : index    // i == j\n      // MERGE intrinsic lowered inline as arith.select\n      %merge  = arith.select %ieq, %c1_f, %c0_f : f32\n      hlfir.yield_element %merge : f32\n    }\n\n    hlfir.assign %expr to %a#0\n        : !hlfir.expr<?x?xf32>, !fir.box<!fir.array<?x?xf32>>\n    hlfir.destroy %expr : !hlfir.expr<?x?xf32>\n    return\n  }\n}\n#loc1 = loc(\"04_forall.f90\":4:0)\n#loc2 = loc(\"04_forall.f90\":8:3)",
+      "line_count": 38,
+      "key_ops": ["hlfir.declare", "hlfir.elemental", "arith.cmpi", "arith.select", "hlfir.yield_element", "hlfir.assign", "hlfir.destroy"],
+      "loc_map": {
+        "04_forall.f90:8": [16, 17, 18, 19, 20],
+        "04_forall.f90:9": [21, 22, 23, 24, 25, 26]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '04_forall.f90'\nsource_filename = \"04_forall.f90\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\ndefine void @_QPforall_identity(\n    ptr nocapture %0,           ; a(n,n)\n    ptr nocapture readonly %1   ; n\n) #0 !dbg !5 {\nentry:\n  %n_val = load i32, ptr %1, align 4, !dbg !10\n  %n_ext = sext i32 %n_val to i64\n  %guard = icmp sgt i64 %n_ext, 0\n  br i1 %guard, label %outer.ph, label %exit\n\nouter.ph:\n  br label %outer\n\nouter:                          ; i loop\n  %i = phi i64 [ 1, %outer.ph ], [ %i.next, %inner.latch ], !dbg !11\n  br label %inner\n\ninner:                          ; j loop\n  %j = phi i64 [ 1, %outer ], [ %j.next, %inner ], !dbg !11\n\n  ; MERGE(1.0, 0.0, i==j) → icmp + select (no branch)\n  %ieqj   = icmp eq i64 %i, %j, !dbg !12\n  %result = select i1 %ieqj, float 1.000000e+00, float 0.000000e+00, !dbg !12\n\n  ; Fortran column-major: a(i,j) → base + (j-1)*n + (i-1)\n  %j_1    = sub nsw i64 %j, 1\n  %i_1    = sub nsw i64 %i, 1\n  %col_off= mul nsw i64 %j_1, %n_ext\n  %offset = add nsw i64 %col_off, %i_1\n  %a_ptr  = getelementptr inbounds float, ptr %0, i64 %offset, !dbg !12\n  store float %result, ptr %a_ptr, align 4, !dbg !12\n\n  %j.next = add nuw nsw i64 %j, 1\n  %j_done = icmp eq i64 %j.next, %n_ext\n  br i1 %j_done, label %inner.latch, label %inner\n\ninner.latch:\n  %i.next = add nuw nsw i64 %i, 1\n  %i_done = icmp eq i64 %i.next, %n_ext\n  br i1 %i_done, label %exit, label %outer\n\nexit:\n  ret void, !dbg !13\n}\n\n; Note: column-major GEP = base + (j-1)*n + (i-1)\n; This is the critical difference from C row-major: j is the outer stride.\n\n!5  = distinct !DISubprogram(name: \"forall_identity\", line: 4)\n!10 = !DILocation(line: 5, column: 3, scope: !5)\n!11 = !DILocation(line: 8, column: 3, scope: !5)\n!12 = !DILocation(line: 9, column: 5, scope: !5)\n!13 = !DILocation(line: 11, column: 1, scope: !5)",
+      "line_count": 58,
+      "key_ops": ["icmp", "select", "getelementptr", "store", "phi", "br", "sub", "mul", "add"],
+      "loc_map": {
+        "04_forall.f90:8": [16, 17, 18, 19],
+        "04_forall.f90:9": [22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 8,
+      "source_col": 3,
+      "source_text": "  FORALL (i = 1:n, j = 1:n)",
+      "construct_type": "forall",
+      "parse_tree_nodes": ["ForallConstruct", "ForallHeader", "ConcurrentControl × 2"],
+      "fir_ops": ["fir.do_loop (outer: i)", "fir.do_loop (inner: j)", "fir.array_load", "fir.array_merge_store"],
+      "hlfir_ops": ["hlfir.elemental %shape<2>", "^bb0(%i: index, %j: index)"],
+      "llvm_ir_lines": ["phi (outer i)", "phi (inner j)", "getelementptr (column-major)", "store"],
+      "lowering_notes": "FORALL with two indices becomes a 2-D hlfir.elemental in HLFIR — the block argument carries both loop variables. Unlike DO CONCURRENT, FORALL does not carry the 'unordered' attribute because the Fortran standard's two-phase semantics (all RHS before LHS) requires a sequential view. However Flang proves independence here via subscript analysis and omits the temporary. The LLVM GEP uses column-major addressing: offset = (j-1)*n + (i-1)."
+    },
+    {
+      "source_line": 9,
+      "source_col": 5,
+      "source_text": "    a(i,j) = MERGE(1.0, 0.0, i == j)",
+      "construct_type": "assignment",
+      "parse_tree_nodes": ["AssignmentStmt", "FunctionReference (MERGE)", "RelationalOp (==)"],
+      "fir_ops": ["arith.cmpi eq", "arith.select", "fir.array_update"],
+      "hlfir_ops": ["arith.cmpi eq", "arith.select", "hlfir.yield_element"],
+      "llvm_ir_lines": ["icmp eq", "select", "store"],
+      "lowering_notes": "MERGE is an elemental intrinsic that maps directly to arith.select — no function call generated. The i==j comparison on FORALL indices uses arith.cmpi (integer compare) since loop indices are of type 'index' in MLIR. This produces a branchless select in LLVM IR, ideal for vectorization."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "FORALL → 2-D hlfir.elemental",
+      "description": "Multi-index FORALL constructs map to a single hlfir.elemental with a multi-dimensional shape; the block arguments carry all index variables simultaneously, matching the construct's parallel semantics"
+    },
+    {
+      "name": "Fortran Column-Major GEP",
+      "description": "2-D array element a(i,j) generates GEP offset = (j-1)*n + (i-1) — the opposite of C's row-major. The compiler adjusts the base pointer for 1-based Fortran indexing by subtracting n+1 from the base"
+    },
+    {
+      "name": "MERGE Intrinsic → arith.select",
+      "description": "Fortran's MERGE elemental intrinsic compiles to a single MLIR arith.select operation — no conditional branch, enabling SIMD vectorization with blend instructions"
+    }
+  ]
+}

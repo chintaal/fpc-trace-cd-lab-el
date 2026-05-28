@@ -1,0 +1,93 @@
+{
+  "id": "10_generic_interface",
+  "name": "Generic Interface Resolution",
+  "description": "Overload resolution at semantics phase — each call resolves to a monomorphic procedure in FIR; name mangling scheme; no runtime dispatch",
+  "category": "procedures",
+  "complexity": "MEDIUM",
+  "fortran_standard": "F90",
+  "key_patterns": ["compile-time overload resolution", "Flang name mangling _QM..P..", "fir.call (monomorphic)", "no vtable — purely static dispatch"],
+  "source": "subroutine demo_dispatch()\n  integer :: i_result\n  real    :: r_result\n  real    :: v(3)\n  v = [1.0, 2.0, 3.0]\n\n  i_result = add(10, 20)\n  r_result = add(1.5, 2.5)\n  r_result = norm(v, 3)\n\n  print *, i_result, r_result\nend subroutine demo_dispatch",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  SubroutineSubprogram\n  | SubroutineStmt -> Name = 'demo_dispatch'\n  | SpecificationPart\n  | | TypeDeclarationStmt (INTEGER)\n  | | | EntityDecl -> ObjectName = 'i_result'\n  | | TypeDeclarationStmt (REAL)\n  | | | EntityDecl -> ObjectName = 'r_result'\n  | | TypeDeclarationStmt (REAL)\n  | | | EntityDecl -> ObjectName = 'v' (shape: 3)\n  | ExecutionPart\n  | | AssignmentStmt -> v = ArrayConstructor [1.0, 2.0, 3.0]\n  | | AssignmentStmt\n  | | | Variable -> Name = 'i_result'\n  | | | Expr -> FunctionReference\n  | | | | Name = 'add'  (generic interface)\n  | | | | SectionSubscriptList\n  | | | | | IntLiteralConstant = '10'\n  | | | | | IntLiteralConstant = '20'\n  | | AssignmentStmt\n  | | | Variable -> Name = 'r_result'\n  | | | Expr -> FunctionReference\n  | | | | Name = 'add'  (generic interface)\n  | | | | SectionSubscriptList\n  | | | | | RealLiteralConstant = '1.5'\n  | | | | | RealLiteralConstant = '2.5'\n  | | AssignmentStmt\n  | | | Variable -> Name = 'r_result'\n  | | | Expr -> FunctionReference\n  | | | | Name = 'norm'  (generic interface)\n  | | | | SectionSubscriptList\n  | | | | | Name = 'v'\n  | | | | | IntLiteralConstant = '3'\n  | EndSubroutineStmt",
+      "line_count": 36,
+      "key_ops": ["FunctionReference (generic 'add')", "FunctionReference (generic 'norm')", "ArrayConstructor"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: demo_dispatch\n  i_result: INTEGER(4) local\n  r_result: REAL(4) local\n  v: REAL(4) rank=1 shape=(1:3) local\n\nGeneric interface resolution:\n  add(10, 20):\n    Argument types: INTEGER(4), INTEGER(4)\n    Candidates: add_int(INTEGER,INTEGER), add_real(REAL,REAL), add_complex(COMPLEX,COMPLEX)\n    Match: add_int — exact type match\n    Resolved to: _QMgeneric_mathPadd_int\n  add(1.5, 2.5):\n    Argument types: REAL(4), REAL(4)\n    Candidates: (same three)\n    Match: add_real — exact type match\n    Resolved to: _QMgeneric_mathPadd_real\n  norm(v, 3):\n    Argument types: REAL(4) rank=1, INTEGER(4)\n    Candidates: norm_1d(REAL rank=1, INTEGER), norm_2d(REAL rank=2, INTEGER, INTEGER)\n    Match: norm_1d — rank=1 for first arg\n    Resolved to: _QMgeneric_mathPnorm_1d\n  Result: ALL calls monomorphic after semantics phase.\n  No generic dispatch table in FIR — no vtable, no runtime overhead.",
+      "line_count": 22,
+      "key_ops": ["add → add_int", "add → add_real", "norm → norm_1d"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After FIR Lowering ***\n// Generic interface resolution happened at semantics phase.\n// FIR sees only monomorphic calls with mangled names.\nmodule @_QMgeneric_math {\n\n  // Module-level procedures (defined elsewhere in module)\n  func.func private @_QMgeneric_mathPadd_int(%arg0: !fir.ref<i32>, %arg1: !fir.ref<i32>) -> i32\n  func.func private @_QMgeneric_mathPadd_real(%arg0: !fir.ref<f32>, %arg1: !fir.ref<f32>) -> f32\n  func.func private @_QMgeneric_mathPnorm_1d(%arg0: !fir.ref<!fir.array<?xf32>>, %arg1: !fir.ref<i32>) -> f32\n\n  func.func @_QMgeneric_mathPdemo_dispatch() {\n    %i_result = fir.alloca i32\n    %r_result = fir.alloca f32\n    %v_alloc  = fir.alloca !fir.array<3xf32>\n\n    // v = [1.0, 2.0, 3.0] — array constructor\n    %c1f = arith.constant 1.0 : f32\n    %c2f = arith.constant 2.0 : f32\n    %c3f = arith.constant 3.0 : f32\n    %v0  = fir.coordinate_of %v_alloc, 1 : (!fir.ref<!fir.array<3xf32>>, index) -> !fir.ref<f32>\n    %v1  = fir.coordinate_of %v_alloc, 2 : (!fir.ref<!fir.array<3xf32>>, index) -> !fir.ref<f32>\n    %v2  = fir.coordinate_of %v_alloc, 3 : (!fir.ref<!fir.array<3xf32>>, index) -> !fir.ref<f32>\n    fir.store %c1f to %v0 : !fir.ref<f32>\n    fir.store %c2f to %v1 : !fir.ref<f32>\n    fir.store %c3f to %v2 : !fir.ref<f32>\n\n    // i_result = add(10, 20) → add_int (monomorphic)\n    %t10 = fir.alloca i32 ; fir.store 10 to %t10\n    %t20 = fir.alloca i32 ; fir.store 20 to %t20\n    %ir  = fir.call @_QMgeneric_mathPadd_int(%t10, %t20) : (!fir.ref<i32>, !fir.ref<i32>) -> i32\n    fir.store %ir to %i_result : !fir.ref<i32>\n\n    // r_result = add(1.5, 2.5) → add_real (monomorphic)\n    %t15 = fir.alloca f32 ; fir.store 1.5 to %t15\n    %t25 = fir.alloca f32 ; fir.store 2.5 to %t25\n    %rr  = fir.call @_QMgeneric_mathPadd_real(%t15, %t25) : (!fir.ref<f32>, !fir.ref<f32>) -> f32\n    fir.store %rr to %r_result : !fir.ref<f32>\n\n    // r_result = norm(v, 3) → norm_1d (monomorphic)\n    %t3  = fir.alloca i32 ; fir.store 3 to %t3\n    %shape= fir.shape 3 : (index) -> !fir.shape<1>\n    %nr  = fir.call @_QMgeneric_mathPnorm_1d(%v_alloc, %t3) : (!fir.ref<!fir.array<?xf32>>, !fir.ref<i32>) -> f32\n    fir.store %nr to %r_result : !fir.ref<f32>\n\n    return\n  }\n}\n#loc1 = loc(\"10_generic_interface.f90\":54:0)\n#loc2 = loc(\"10_generic_interface.f90\":61:5)\n#loc3 = loc(\"10_generic_interface.f90\":62:5)\n#loc4 = loc(\"10_generic_interface.f90\":64:5)",
+      "line_count": 52,
+      "key_ops": ["fir.alloca (all variables)", "fir.coordinate_of (array constructor)", "fir.call @_QMgeneric_mathPadd_int", "fir.call @_QMgeneric_mathPadd_real", "fir.call @_QMgeneric_mathPnorm_1d"],
+      "loc_map": {
+        "10_generic_interface.f90:61": [25, 26, 27, 28],
+        "10_generic_interface.f90:62": [30, 31, 32, 33],
+        "10_generic_interface.f90:64": [35, 36, 37, 38]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After HLFIR Lowering ***\nmodule @_QMgeneric_math {\n  func.func @_QMgeneric_mathPdemo_dispatch() {\n\n    // Local variables declared with hlfir.declare\n    %i_alloc = fir.alloca i32 {uniq_name = \"_QFdemo_dispatchEi_result\"}\n    %r_alloc = fir.alloca f32 {uniq_name = \"_QFdemo_dispatchEr_result\"}\n    %v_alloc = fir.alloca !fir.array<3xf32> {uniq_name = \"_QFdemo_dispatchEv\"}\n\n    %i:2 = hlfir.declare %i_alloc {uniq_name = \"_QFdemo_dispatchEi_result\"}\n               : (!fir.ref<i32>) -> (!fir.ref<i32>, !fir.ref<i32>)\n    %r:2 = hlfir.declare %r_alloc {uniq_name = \"_QFdemo_dispatchEr_result\"}\n               : (!fir.ref<f32>) -> (!fir.ref<f32>, !fir.ref<f32>)\n\n    // Array constructor for v: hlfir.set_length + assign\n    %shape3 = fir.shape 3 : (index) -> !fir.shape<1>\n    %v:2 = hlfir.declare %v_alloc(%shape3) {uniq_name = \"_QFdemo_dispatchEv\"}\n               : (!fir.ref<!fir.array<3xf32>>, !fir.shape<1>)\n              -> (!fir.box<!fir.array<3xf32>>, !fir.ref<!fir.array<3xf32>>)\n\n    // Array constructor [1.0, 2.0, 3.0] — HLFIR builds as hlfir.expr then assigns\n    %ctor = hlfir.elemental %shape3 : (!fir.shape<1>) -> !hlfir.expr<3xf32> {\n    ^bb0(%i_idx: index):\n      // Constant fold: index maps directly to literal value\n      %vals = arith.constant dense<[1.0, 2.0, 3.0]> : vector<3xf32>\n      %el   = vector.extractelement %vals[%i_idx : index] : vector<3xf32>\n      hlfir.yield_element %el : f32\n    }\n    hlfir.assign %ctor to %v#0 : !hlfir.expr<3xf32>, !fir.box<!fir.array<3xf32>>\n    hlfir.destroy %ctor : !hlfir.expr<3xf32>\n\n    // Generic calls already resolved — HLFIR sees monomorphic fir.call\n    %t10 = fir.alloca i32 ; fir.store 10 : i32 to %t10\n    %t20 = fir.alloca i32 ; fir.store 20 : i32 to %t20\n    %ir  = fir.call @_QMgeneric_mathPadd_int(%t10, %t20) : (!fir.ref<i32>, !fir.ref<i32>) -> i32\n    hlfir.assign %ir to %i#0 : i32, !fir.ref<i32>\n\n    %t15 = fir.alloca f32 ; fir.store 1.5 : f32 to %t15\n    %t25 = fir.alloca f32 ; fir.store 2.5 : f32 to %t25\n    %rr  = fir.call @_QMgeneric_mathPadd_real(%t15, %t25) : (!fir.ref<f32>, !fir.ref<f32>) -> f32\n    hlfir.assign %rr to %r#0 : f32, !fir.ref<f32>\n\n    %t3  = fir.alloca i32 ; fir.store 3 : i32 to %t3\n    %nr  = fir.call @_QMgeneric_mathPnorm_1d(%v#1, %t3) : (!fir.ref<!fir.array<?xf32>>, !fir.ref<i32>) -> f32\n    hlfir.assign %nr to %r#0 : f32, !fir.ref<f32>\n\n    return\n  }\n}\n#loc1 = loc(\"10_generic_interface.f90\":54:0)",
+      "line_count": 48,
+      "key_ops": ["hlfir.declare × 3", "hlfir.elemental (array constructor)", "fir.call @_QMgeneric_mathPadd_int", "fir.call @_QMgeneric_mathPadd_real", "fir.call @_QMgeneric_mathPnorm_1d", "hlfir.assign"],
+      "loc_map": {
+        "10_generic_interface.f90:61": [29, 30, 31, 32],
+        "10_generic_interface.f90:62": [34, 35, 36, 37],
+        "10_generic_interface.f90:64": [39, 40, 41]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '10_generic_interface.f90'\n; All generic calls resolved to direct, typed call sites.\n; Flang name mangling scheme:\n;   _Q = Flang prefix\n;   M = module  → generic_math\n;   P = procedure → add_int / add_real / norm_1d\n\ndeclare i32  @_QMgeneric_mathPadd_int(ptr, ptr)\ndeclare float @_QMgeneric_mathPadd_real(ptr, ptr)\ndeclare float @_QMgeneric_mathPnorm_1d(ptr, ptr)\n\ndefine void @_QMgeneric_mathPdemo_dispatch() #0 !dbg !5 {\nentry:\n  ; All locals stack-allocated (Fortran by-reference ABI)\n  %i_result = alloca i32, align 4\n  %r_result = alloca float, align 4\n  %v_arr    = alloca [3 x float], align 4\n\n  ; v = [1.0, 2.0, 3.0]\n  store float 1.000000e+00, ptr %v_arr, align 4\n  %v1_ptr = getelementptr inbounds float, ptr %v_arr, i64 1\n  store float 2.000000e+00, ptr %v1_ptr, align 4\n  %v2_ptr = getelementptr inbounds float, ptr %v_arr, i64 2\n  store float 3.000000e+00, ptr %v2_ptr, align 4\n\n  ; i_result = add(10, 20) — resolved to add_int at semantics phase\n  %t10 = alloca i32, align 4\n  %t20 = alloca i32, align 4\n  store i32 10, ptr %t10, align 4\n  store i32 20, ptr %t20, align 4\n  %ir  = call i32 @_QMgeneric_mathPadd_int(ptr %t10, ptr %t20), !dbg !11\n  store i32 %ir, ptr %i_result, align 4, !dbg !11\n\n  ; r_result = add(1.5, 2.5) — resolved to add_real\n  %t15 = alloca float, align 4\n  %t25 = alloca float, align 4\n  store float 1.500000e+00, ptr %t15, align 4\n  store float 2.500000e+00, ptr %t25, align 4\n  %rr  = call float @_QMgeneric_mathPadd_real(ptr %t15, ptr %t25), !dbg !12\n  store float %rr, ptr %r_result, align 4, !dbg !12\n\n  ; r_result = norm(v, 3) — resolved to norm_1d\n  %t3  = alloca i32, align 4\n  store i32 3, ptr %t3, align 4\n  %nr  = call float @_QMgeneric_mathPnorm_1d(ptr %v_arr, ptr %t3), !dbg !13\n  store float %nr, ptr %r_result, align 4, !dbg !13\n\n  ; print ... (omitted — runtime I/O calls)\n  ret void, !dbg !14\n}\n\n; CRITICAL INSIGHT: Three calls named 'add' in Fortran become three\n; different direct call instructions in LLVM IR. There is NO generic\n; dispatch table, no type tag check, no branching — purely compile-time\n; name resolution encoded as distinct mangled symbol names.\n\n; Flang mangling reference:\n;   _Q + [M<module>]* + P<procedure>\n;   E<variable> for local entities\n;   Example: _QMgeneric_mathPadd_int\n;     _Q prefix, M=module generic_math, P=procedure add_int\n\n!5  = distinct !DISubprogram(name: \"demo_dispatch\", line: 54)\n!11 = !DILocation(line: 61, column: 5, scope: !5)\n!12 = !DILocation(line: 62, column: 5, scope: !5)\n!13 = !DILocation(line: 64, column: 5, scope: !5)\n!14 = !DILocation(line: 66, column: 1, scope: !5)",
+      "line_count": 66,
+      "key_ops": ["alloca (all by-ref args)", "store (constant args)", "call @_QMgeneric_mathPadd_int", "call @_QMgeneric_mathPadd_real", "call @_QMgeneric_mathPnorm_1d", "getelementptr (array constructor)"],
+      "loc_map": {
+        "10_generic_interface.f90:61": [26, 27, 28, 29, 30, 31],
+        "10_generic_interface.f90:62": [33, 34, 35, 36, 37, 38],
+        "10_generic_interface.f90:64": [40, 41, 42, 43, 44]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 7,
+      "source_col": 3,
+      "source_text": "  i_result = add(10, 20)",
+      "construct_type": "procedure_call",
+      "parse_tree_nodes": ["AssignmentStmt", "FunctionReference ('add', generic)"],
+      "fir_ops": ["fir.call @_QMgeneric_mathPadd_int (resolved at semantics)"],
+      "hlfir_ops": ["fir.call @_QMgeneric_mathPadd_int"],
+      "llvm_ir_lines": ["call i32 @_QMgeneric_mathPadd_int"],
+      "lowering_notes": "Generic interface add(INTEGER, INTEGER) resolves to add_int during semantics phase via argument type matching. By the time FIR is emitted, all generic calls have been replaced with direct monomorphic calls to mangled symbol names. The Flang mangling scheme encodes the module path as _QM<module>P<procedure>. No vtable, no type tags — purely compile-time disambiguation."
+    },
+    {
+      "source_line": 9,
+      "source_col": 3,
+      "source_text": "  r_result = norm(v, 3)",
+      "construct_type": "procedure_call",
+      "parse_tree_nodes": ["AssignmentStmt", "FunctionReference ('norm', generic)"],
+      "fir_ops": ["fir.call @_QMgeneric_mathPnorm_1d"],
+      "hlfir_ops": ["fir.call @_QMgeneric_mathPnorm_1d"],
+      "llvm_ir_lines": ["call float @_QMgeneric_mathPnorm_1d"],
+      "lowering_notes": "norm(v, 3) where v has rank=1 selects norm_1d over norm_2d via rank disambiguation at semantics time. This demonstrates that Fortran's overload resolution considers argument rank (not just type), which the semantics phase resolves statically without any runtime overhead."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "Generic → Monomorphic at Semantics Phase",
+      "description": "Fortran generic interface calls are fully resolved during semantic analysis — FIR and all subsequent IR levels see only direct, monomorphic call sites with no dispatch overhead"
+    },
+    {
+      "name": "Flang Name Mangling: _QM<module>P<proc>",
+      "description": "Flang encodes the full module path in symbol names: _Q prefix, M<module_name> for each enclosing module, P<procedure_name> for the leaf procedure — enabling separate compilation with unique link-time symbols"
+    }
+  ]
+}

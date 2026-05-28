@@ -1,0 +1,66 @@
+<svg width="900" height="120" viewBox="0 0 900 120" xmlns="http://www.w3.org/2000/svg" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#484f58"/>
+    </marker>
+    <filter id="glow-purple"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="glow-blue"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="glow-green"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="glow-yellow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="glow-red"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="120" fill="#0d1117" rx="10"/>
+
+  <!-- Fortran Source box -->
+  <rect x="12" y="30" width="110" height="60" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <text x="67" y="56" text-anchor="middle" fill="#8b949e" font-size="9" font-weight="700" letter-spacing="0.5">FORTRAN</text>
+  <text x="67" y="70" text-anchor="middle" fill="#8b949e" font-size="9" font-weight="700" letter-spacing="0.5">SOURCE</text>
+  <text x="67" y="84" text-anchor="middle" fill="#484f58" font-size="8">.f90</text>
+
+  <!-- Arrow 1 -->
+  <line x1="124" y1="60" x2="148" y2="60" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Parse Tree box -->
+  <rect x="150" y="22" width="130" height="76" rx="8" fill="#1a1025" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="215" y="52" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="800" letter-spacing="0.5">PARSE TREE</text>
+  <text x="215" y="68" text-anchor="middle" fill="#8b6ebf" font-size="8">-fdebug-dump-parse-tree</text>
+  <text x="215" y="82" text-anchor="middle" fill="#6b4fa0" font-size="8">DoConstruct · AssignmentStmt</text>
+
+  <!-- Arrow 2 -->
+  <line x1="282" y1="60" x2="306" y2="60" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Semantics box -->
+  <rect x="308" y="22" width="130" height="76" rx="8" fill="#0d1a2e" stroke="#388bfd" stroke-width="1.5"/>
+  <text x="373" y="52" text-anchor="middle" fill="#388bfd" font-size="11" font-weight="800" letter-spacing="0.5">SEMANTICS</text>
+  <text x="373" y="68" text-anchor="middle" fill="#2d6fd4" font-size="8">-fdebug-dump-symbols</text>
+  <text x="373" y="82" text-anchor="middle" fill="#1e4d99" font-size="8">types · aliasing · conformance</text>
+
+  <!-- Arrow 3 -->
+  <line x1="440" y1="60" x2="464" y2="60" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- HLFIR box -->
+  <rect x="466" y="22" width="130" height="76" rx="8" fill="#1e1a00" stroke="#e3b341" stroke-width="1.5"/>
+  <text x="531" y="52" text-anchor="middle" fill="#e3b341" font-size="11" font-weight="800" letter-spacing="0.5">HLFIR</text>
+  <text x="531" y="68" text-anchor="middle" fill="#c49a2e" font-size="8">--mlir-print-ir-after-all</text>
+  <text x="531" y="82" text-anchor="middle" fill="#8a6b1f" font-size="8">hlfir.elemental · hlfir.assign</text>
+
+  <!-- Arrow 4 -->
+  <line x1="598" y1="60" x2="622" y2="60" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- FIR box -->
+  <rect x="624" y="22" width="130" height="76" rx="8" fill="#0a1f0a" stroke="#3fb950" stroke-width="1.5"/>
+  <text x="689" y="52" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="800" letter-spacing="0.5">FIR</text>
+  <text x="689" y="68" text-anchor="middle" fill="#2d8a3c" font-size="8">--mlir-print-ir-before-all</text>
+  <text x="689" y="82" text-anchor="middle" fill="#1e5e28" font-size="8">fir.do_loop · fir.array_load</text>
+
+  <!-- Arrow 5 -->
+  <line x1="756" y1="60" x2="780" y2="60" stroke="#30363d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- LLVM IR box -->
+  <rect x="782" y="22" width="108" height="76" rx="8" fill="#200a0a" stroke="#f85149" stroke-width="1.5"/>
+  <text x="836" y="52" text-anchor="middle" fill="#f85149" font-size="11" font-weight="800" letter-spacing="0.5">LLVM IR</text>
+  <text x="836" y="68" text-anchor="middle" fill="#c43d37" font-size="8">-emit-llvm -S -O0 -g</text>
+  <text x="836" y="82" text-anchor="middle" fill="#8a2a24" font-size="8">phi · getelementptr · fadd</text>
+</svg>

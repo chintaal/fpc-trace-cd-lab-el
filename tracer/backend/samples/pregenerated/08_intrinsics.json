@@ -1,0 +1,80 @@
+{
+  "id": "08_intrinsics",
+  "name": "Array Intrinsics: MATMUL, SUM, MAXVAL, TRANSPOSE",
+  "description": "Intrinsic lowering paths: MATMUL → _FortranAMatmul runtime call; SUM/MAXVAL → inline loop or _FortranASum; TRANSPOSE → hlfir.elemental with swapped indices",
+  "category": "intrinsics",
+  "complexity": "HIGH",
+  "fortran_standard": "F90",
+  "key_patterns": ["fir.call @_FortranAMatmul", "_FortranASum vs inline", "hlfir.expr (temporary)", "TRANSPOSE → elemental"],
+  "source": "subroutine matrix_ops(c, a, b, n, m, k)\n  implicit none\n  integer, intent(in)  :: n, m, k\n  real,    intent(in)  :: a(n,m), b(m,k)\n  real,    intent(out) :: c(n,k)\n\n  c = MATMUL(a, b)\n\nend subroutine matrix_ops",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  SubroutineSubprogram\n  | SubroutineStmt -> Name = 'matrix_ops'\n  | SpecificationPart\n  | | ImplicitNoneStmt\n  | | TypeDeclarationStmt (INTEGER intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'n'\n  | | | EntityDecl -> ObjectName = 'm'\n  | | | EntityDecl -> ObjectName = 'k'\n  | | TypeDeclarationStmt (REAL intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'a' (shape: n,m)\n  | | | EntityDecl -> ObjectName = 'b' (shape: m,k)\n  | | TypeDeclarationStmt (REAL intent=IntentOut)\n  | | | EntityDecl -> ObjectName = 'c' (shape: n,k)\n  | ExecutionPart\n  | | AssignmentStmt\n  | | | Variable -> Name = 'c'\n  | | | Expr -> FunctionReference\n  | | | | Name = 'MATMUL'  (intrinsic, transformational)\n  | | | | SectionSubscriptList\n  | | | | | SectionSubscript -> Name = 'a'\n  | | | | | SectionSubscript -> Name = 'b'\n  | EndSubroutineStmt",
+      "line_count": 23,
+      "key_ops": ["AssignmentStmt", "FunctionReference (MATMUL)", "IntrinsicProcedureRef"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: matrix_ops\n  c: rank=2 REAL(4) intent=IntentOut  shape=(1:n,1:k)\n  a: rank=2 REAL(4) intent=IntentIn   shape=(1:n,1:m)\n  b: rank=2 REAL(4) intent=IntentIn   shape=(1:m,1:k)\n  n, m, k: rank=0 INTEGER(4) intent=IntentIn\n\nMATMUL analysis:\n  Classification: TRANSFORMATIONAL intrinsic (not elemental)\n  Arguments: a(n,m), b(m,k) — inner dimensions must match: a%dim(2) == b%dim(1)\n  Result: c(n,k) — outer dimensions\n  Conformance check: m == m ✓\n  Lowering strategy:\n    1. Allocate temporary !hlfir.expr<?x?xf32> of shape (n,k)\n    2. Call @_FortranAMatmul(result_desc, a_desc, b_desc) — runtime does the work\n    3. Copy temp into c using hlfir.assign\n    4. Destroy temp (hlfir.destroy)\n  Why runtime? Matrix multiply is not elemental — it has a reduction dimension\n    that cannot be expressed as a simple hlfir.elemental body.",
+      "line_count": 18,
+      "key_ops": ["c", "a", "b", "MATMUL"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After InlineElementals ***\nmodule @_QMmatrix_ops {\n  func.func @_QPmatrix_ops(\n      %arg0: !fir.ref<!fir.array<?x?xf32>> {fir.bindc_name = \"c\", fir.inout},\n      %arg1: !fir.ref<!fir.array<?x?xf32>> {fir.bindc_name = \"a\", fir.in},\n      %arg2: !fir.ref<!fir.array<?x?xf32>> {fir.bindc_name = \"b\", fir.in},\n      %arg3: !fir.ref<i32>                 {fir.bindc_name = \"n\", fir.in},\n      %arg4: !fir.ref<i32>                 {fir.bindc_name = \"m\", fir.in},\n      %arg5: !fir.ref<i32>                 {fir.bindc_name = \"k\", fir.in}\n  ) {\n    %n = fir.load %arg3 : !fir.ref<i32>\n    %m = fir.load %arg4 : !fir.ref<i32>\n    %k = fir.load %arg5 : !fir.ref<i32>\n    %n_i = fir.convert %n : (i32) -> index\n    %m_i = fir.convert %m : (i32) -> index\n    %k_i = fir.convert %k : (i32) -> index\n\n    %shape_a = fir.shape %n_i, %m_i : (index, index) -> !fir.shape<2>\n    %shape_b = fir.shape %m_i, %k_i : (index, index) -> !fir.shape<2>\n    %shape_c = fir.shape %n_i, %k_i : (index, index) -> !fir.shape<2>\n\n    // Embox arguments into descriptors for the runtime ABI\n    %a_box = fir.embox %arg1(%shape_a) : (!fir.ref<!fir.array<?x?xf32>>, !fir.shape<2>) -> !fir.box<!fir.array<?x?xf32>>\n    %b_box = fir.embox %arg2(%shape_b) : (!fir.ref<!fir.array<?x?xf32>>, !fir.shape<2>) -> !fir.box<!fir.array<?x?xf32>>\n\n    // Allocate result descriptor on stack\n    %result_desc = fir.alloca !fir.box<!fir.heap<!fir.array<?x?xf32>>>\n    fir.store %0 to %result_desc : !fir.ref<!fir.box<!fir.heap<!fir.array<?x?xf32>>>>\n\n    // MATMUL → runtime call\n    fir.call @_FortranAMatmul(%result_desc, %a_box, %b_box, ...) : (...) -> ()\n\n    // Load result and store to c\n    %result_val = fir.load %result_desc : !fir.ref<!fir.box<!fir.heap<!fir.array<?x?xf32>>>>\n    %result_ptr = fir.box_addr %result_val : (!fir.box<!fir.heap<!fir.array<?x?xf32>>>) -> !fir.heap<!fir.array<?x?xf32>>\n\n    // Copy result into c (fir.array_merge_store equivalent for heap arrays)\n    %c_box = fir.embox %arg0(%shape_c) : (!fir.ref<!fir.array<?x?xf32>>, !fir.shape<2>) -> !fir.box<!fir.array<?x?xf32>>\n    fir.call @_FortranAAssign(%c_box, %result_val, ...) : (...) -> ()\n\n    // Free the temporary result\n    %heap_ptr = fir.box_addr %result_val : (...) -> !fir.heap<!fir.array<?x?xf32>>\n    fir.freemem %heap_ptr : !fir.heap<!fir.array<?x?xf32>>\n    return\n  }\n}\n#loc1 = loc(\"08_intrinsics.f90\":4:0)\n#loc2 = loc(\"08_intrinsics.f90\":11:3)",
+      "line_count": 48,
+      "key_ops": ["fir.embox", "fir.alloca", "fir.call @_FortranAMatmul", "fir.box_addr", "fir.call @_FortranAAssign", "fir.freemem"],
+      "loc_map": {
+        "08_intrinsics.f90:11": [28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After HLFIR Lowering ***\nmodule @_QMmatrix_ops {\n  func.func @_QPmatrix_ops(\n      %arg0: !fir.ref<!fir.array<?x?xf32>> {fir.bindc_name = \"c\", fir.inout},\n      %arg1: !fir.ref<!fir.array<?x?xf32>> {fir.bindc_name = \"a\", fir.in},\n      %arg2: !fir.ref<!fir.array<?x?xf32>> {fir.bindc_name = \"b\", fir.in},\n      %arg3: !fir.ref<i32>, %arg4: !fir.ref<i32>, %arg5: !fir.ref<i32>\n  ) {\n    %n = fir.load %arg3 : !fir.ref<i32>\n    %m = fir.load %arg4 : !fir.ref<i32>\n    %k = fir.load %arg5 : !fir.ref<i32>\n    %n_i = fir.convert %n : (i32) -> index\n    %m_i = fir.convert %m : (i32) -> index\n    %k_i = fir.convert %k : (i32) -> index\n\n    %sha_a = fir.shape %n_i, %m_i : (index, index) -> !fir.shape<2>\n    %sha_b = fir.shape %m_i, %k_i : (index, index) -> !fir.shape<2>\n    %sha_c = fir.shape %n_i, %k_i : (index, index) -> !fir.shape<2>\n\n    %a:2 = hlfir.declare %arg1(%sha_a) {fortran_attrs = #fir.var_attrs<intent_in>, uniq_name = \"_QFmatrix_opsEa\"}\n               : (...) -> (!fir.box<!fir.array<?x?xf32>>, !fir.ref<!fir.array<?x?xf32>>)\n    %b:2 = hlfir.declare %arg2(%sha_b) {fortran_attrs = #fir.var_attrs<intent_in>, uniq_name = \"_QFmatrix_opsEb\"}\n               : (...) -> (!fir.box<!fir.array<?x?xf32>>, !fir.ref<!fir.array<?x?xf32>>)\n    %c:2 = hlfir.declare %arg0(%sha_c) {fortran_attrs = #fir.var_attrs<intent_out>, uniq_name = \"_QFmatrix_opsEc\"}\n               : (...) -> (!fir.box<!fir.array<?x?xf32>>, !fir.ref<!fir.array<?x?xf32>>)\n\n    // MATMUL: HLFIR represents it as hlfir.matmul before lowering\n    // This is a TRANSFORMATIONAL op — produces a value-typed heap expression\n    %matmul_result = hlfir.matmul %a#0, %b#0\n                         : (!fir.box<!fir.array<?x?xf32>>, !fir.box<!fir.array<?x?xf32>>)\n                        -> !hlfir.expr<?x?xf32>\n\n    // Assign the heap expression into c\n    hlfir.assign %matmul_result to %c#0\n        : !hlfir.expr<?x?xf32>, !fir.box<!fir.array<?x?xf32>>\n\n    // Release temporary heap storage\n    hlfir.destroy %matmul_result : !hlfir.expr<?x?xf32>\n    return\n  }\n}\n#loc1 = loc(\"08_intrinsics.f90\":4:0)\n#loc2 = loc(\"08_intrinsics.f90\":11:3)",
+      "line_count": 42,
+      "key_ops": ["hlfir.declare", "hlfir.matmul", "hlfir.assign", "hlfir.destroy"],
+      "loc_map": {
+        "08_intrinsics.f90:11": [27, 28, 29, 30, 31, 32, 33, 34]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '08_intrinsics.f90'\n; Runtime ABI for transformational intrinsics\ndeclare void @_FortranAMatmul(ptr, ptr, ptr, ptr, i32, i32)\ndeclare void @_FortranAAssign(ptr, ptr, ptr, i32, i32)\n\ndefine void @_QPmatrix_ops(\n    ptr nocapture %0,   ; c(n,k)\n    ptr nocapture readonly %1,  ; a(n,m)\n    ptr nocapture readonly %2,  ; b(m,k)\n    ptr nocapture readonly %3,  ; n\n    ptr nocapture readonly %4,  ; m\n    ptr nocapture readonly %5   ; k\n) #0 !dbg !5 {\nentry:\n  %n = load i32, ptr %3, align 4\n  %m = load i32, ptr %4, align 4\n  %k = load i32, ptr %5, align 4\n  %n_64 = sext i32 %n to i64\n  %m_64 = sext i32 %m to i64\n  %k_64 = sext i32 %k to i64\n\n  ; Build Fortran array descriptor for a (on stack)\n  %a_desc = alloca %Descriptor, align 8\n  ; Populate: base_addr=a, rank=2, extent0=n, extent1=m, stride0=1, stride1=n\n  store ptr %1, ptr %a_desc, align 8\n  ; ... (descriptor field population omitted for brevity)\n\n  ; Build descriptor for b\n  %b_desc = alloca %Descriptor, align 8\n  store ptr %2, ptr %b_desc, align 8\n\n  ; Allocate result descriptor on stack; _FortranAMatmul will heap-allocate the data\n  %result_desc = alloca %Descriptor, align 8\n  ; Zero-initialize so _FortranAMatmul knows to allocate\n  call void @llvm.memset.p0.i64(ptr %result_desc, i8 0, i64 72, i1 false)\n\n  ; Call MATMUL runtime — does the actual matrix multiplication\n  ; ABI: (result_desc, a_desc, b_desc, src_file, src_line)\n  call void @_FortranAMatmul(ptr %result_desc, ptr %a_desc, ptr %b_desc,\n                              ptr @.str_file, i32 8, i32 3), !dbg !11\n\n  ; Build descriptor for c (output)\n  %c_desc = alloca %Descriptor, align 8\n  store ptr %0, ptr %c_desc, align 8\n  ; ... extent/stride population\n\n  ; Copy result into c\n  call void @_FortranAAssign(ptr %c_desc, ptr %result_desc,\n                              ptr @.str_file, i32 8, i32 3), !dbg !11\n\n  ; Free the heap-allocated result buffer\n  %data_ptr = load ptr, ptr %result_desc, align 8\n  call void @_FortranAFreeMemory(ptr %data_ptr)\n\n  ret void, !dbg !12\n}\n\n; CRITICAL INSIGHT: MATMUL generates 3 stack-allocated Fortran descriptors\n; and delegates all computation to _FortranAMatmul. The descriptor ABI carries\n; rank, extents, strides, base_addr — allowing the runtime to handle arbitrary\n; column-major arrays without knowing sizes at compile time.\n\n!5  = distinct !DISubprogram(name: \"matrix_ops\", line: 4)\n!11 = !DILocation(line: 11, column: 3, scope: !5)\n!12 = !DILocation(line: 13, column: 1, scope: !5)",
+      "line_count": 66,
+      "key_ops": ["alloca (descriptors × 3)", "call @_FortranAMatmul", "call @_FortranAAssign", "call @_FortranAFreeMemory", "load", "store"],
+      "loc_map": {
+        "08_intrinsics.f90:11": [33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 11,
+      "source_col": 3,
+      "source_text": "  c = MATMUL(a, b)",
+      "construct_type": "matmul_intrinsic",
+      "parse_tree_nodes": ["AssignmentStmt", "FunctionReference (MATMUL, transformational)"],
+      "fir_ops": ["fir.embox × 2", "fir.alloca (result)", "fir.call @_FortranAMatmul", "fir.call @_FortranAAssign", "fir.freemem"],
+      "hlfir_ops": ["hlfir.matmul → !hlfir.expr<?x?xf32>", "hlfir.assign", "hlfir.destroy"],
+      "llvm_ir_lines": ["alloca (3 descriptors)", "call @_FortranAMatmul", "call @_FortranAAssign", "call @_FortranAFreeMemory"],
+      "lowering_notes": "MATMUL is a transformational (not elemental) intrinsic — its result depends on reductions across the inner dimension. Flang cannot express it as hlfir.elemental. Instead, HLFIR introduces hlfir.matmul as a distinct op that lowers to embox (building Fortran array descriptors on the stack) + _FortranAMatmul runtime call + _FortranAAssign to copy the heap-allocated result into c + _FortranAFreeMemory. Three stack-allocated descriptors encode rank, extents, strides, and base pointers for the Fortran runtime ABI."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "Transformational Intrinsic → Runtime ABI",
+      "description": "MATMUL, SUM, MAXVAL (and other transformational intrinsics) lower to calls into the Fortran runtime library via descriptor ABI — stack-allocated structs encoding rank, extents, strides, and base_addr"
+    },
+    {
+      "name": "hlfir.matmul op",
+      "description": "HLFIR introduces intrinsic-specific ops (hlfir.matmul, hlfir.sum, hlfir.maxval) that preserve the high-level semantics for optimization passes before lowering to FIR runtime calls"
+    },
+    {
+      "name": "Heap Temporary Lifecycle",
+      "description": "Non-elemental intrinsic results (type !hlfir.expr) represent heap-allocated temporaries; hlfir.destroy emits _FortranAFreeMemory to release them after use"
+    }
+  ]
+}

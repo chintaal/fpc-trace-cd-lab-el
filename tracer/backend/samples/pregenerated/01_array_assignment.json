@@ -1,0 +1,76 @@
+{
+  "id": "01_array_assignment",
+  "name": "Array Element-wise Assignment",
+  "description": "How a = b + c on rank-1 arrays flows from HLFIR elemental through to a counted loop in LLVM IR",
+  "category": "array_operations",
+  "complexity": "MEDIUM",
+  "fortran_standard": "F90",
+  "key_patterns": ["hlfir.elemental", "fir.array_load/fetch/update", "GEP + fadd loop"],
+  "source": "subroutine array_add(a, b, c, n)\n  implicit none\n  integer, intent(in)  :: n\n  real,    intent(in)  :: b(n), c(n)\n  real,    intent(out) :: a(n)\n\n  ! This single line triggers the full elemental lowering chain\n  a = b + c\n\nend subroutine array_add",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  SubroutineSubprogram\n  | SubroutineStmt\n  | | Name = 'array_add'\n  | | DummyArgList -> DummyArg -> Name = 'a'\n  | | DummyArgList -> DummyArg -> Name = 'b'\n  | | DummyArgList -> DummyArg -> Name = 'c'\n  | | DummyArgList -> DummyArg -> Name = 'n'\n  | SpecificationPart\n  | | ImplicitPart -> ImplicitStmt -> ImplicitNoneStmt\n  | | TypeDeclarationStmt -> DeclarationTypeSpec -> IntrinsicTypeSpec -> IntegerTypeSpec\n  | | | AttrSpec -> IntentSpec = IntentIn\n  | | | EntityDecl -> ObjectName = 'n'\n  | | TypeDeclarationStmt -> DeclarationTypeSpec -> IntrinsicTypeSpec -> RealTypeSpec\n  | | | AttrSpec -> IntentSpec = IntentIn\n  | | | EntityDecl -> ObjectName = 'b'\n  | | | | ExplicitShapeSpecList -> ExplicitShapeSpec -> SectionSubscript -> Name = 'n'\n  | | | EntityDecl -> ObjectName = 'c'\n  | | | | ExplicitShapeSpecList -> ExplicitShapeSpec -> SectionSubscript -> Name = 'n'\n  | | TypeDeclarationStmt -> DeclarationTypeSpec -> IntrinsicTypeSpec -> RealTypeSpec\n  | | | AttrSpec -> IntentSpec = IntentOut\n  | | | EntityDecl -> ObjectName = 'a'\n  | | | | ExplicitShapeSpecList -> ExplicitShapeSpec -> SectionSubscript -> Name = 'n'\n  | ExecutionPart\n  | | ExecutionPartConstruct -> ExecutableConstruct -> ActionStmt\n  | | | AssignmentStmt\n  | | | | Variable -> Designator -> DataRef -> PartRef\n  | | | | | Name = 'a'\n  | | | | Expr -> Level2Expr -> AddOperandExpr\n  | | | | | AddOperandExpr -> MultOperand -> Level1Expr -> PrimaryExpr\n  | | | | | | Designator -> DataRef -> Name = 'b'\n  | | | | | AddOp = '+'\n  | | | | | MultOperand -> Level1Expr -> PrimaryExpr\n  | | | | | | Designator -> DataRef -> Name = 'c'\n  | EndSubroutineStmt -> Name = 'array_add'",
+      "line_count": 38,
+      "key_ops": ["AssignmentStmt", "AddOp", "PartRef", "ExplicitShapeSpec"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: array_add\n  a: ObjectEntityDetails rank=1 REAL(4) intent=IntentOut\n    shape: (1:n)\n  b: ObjectEntityDetails rank=1 REAL(4) intent=IntentIn\n    shape: (1:n)\n  c: ObjectEntityDetails rank=1 REAL(4) intent=IntentIn\n    shape: (1:n)\n  n: ObjectEntityDetails rank=0 INTEGER(4) intent=IntentIn\n\nResolved: AssignmentStmt line 9\n  LHS type: REAL(4) array rank-1 shape=[(1:n)]\n  RHS type: REAL(4) array rank-1 shape=[(1:n)]\n  Elemental intrinsic operator: operator(+)\n  Conformance: OK — shapes match via deferred-shape propagation\n  No aliasing hazard detected (distinct dummy arguments)",
+      "line_count": 14,
+      "key_ops": ["a", "b", "c", "n"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After InlineElementals (fir-inline-elementals) ***\nmodule @_QMarray_add attributes {\n  fir.defaultkind = \"a1c4d8i4l4r4\",\n  fir.kindmap = \"\"\n} {\n  func.func @_QParray_add(\n      %arg0: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"a\", fir.inout},\n      %arg1: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"b\", fir.in},\n      %arg2: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"c\", fir.in},\n      %arg3: !fir.ref<i32> {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %c1 = arith.constant 1 : index\n    %c1_i64 = arith.constant 1 : i64\n    %0 = fir.load %arg3 : !fir.ref<i32>                           // load n\n    %1 = fir.convert %0 : (i32) -> index                          // n as index\n    %2 = fir.shape %1 : (index) -> !fir.shape<1>                  // shape(n)\n    %3 = fir.array_load %arg1(%2) : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> !fir.array<?xf32>  // load b\n    %4 = fir.array_load %arg2(%2) : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> !fir.array<?xf32>  // load c\n    %5 = fir.array_load %arg0(%2) : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>) -> !fir.array<?xf32>  // load a (for merge)\n    %6 = fir.do_loop %iv = %c1 to %1 step %c1\n             unordered iter_args(%arg4 = %5) -> (!fir.array<?xf32>) {\n      %7 = fir.array_fetch %3, %iv : (!fir.array<?xf32>, index) -> f32   // b(iv)\n      %8 = fir.array_fetch %4, %iv : (!fir.array<?xf32>, index) -> f32   // c(iv)\n      %9 = arith.addf %7, %8 fastmath<contract> : f32                    // b(iv)+c(iv)\n      %10 = fir.array_update %arg4, %9, %iv : (!fir.array<?xf32>, f32, index) -> !fir.array<?xf32>\n      fir.result %10 : !fir.array<?xf32>\n    }\n    fir.array_merge_store %5, %6 to %arg0 : !fir.array<?xf32>, !fir.array<?xf32>, !fir.ref<!fir.array<?xf32>>\n    return\n  } loc(#loc1)\n}\n#loc1 = loc(\"01_array_assignment.f90\":3:0)\n#loc2 = loc(\"01_array_assignment.f90\":9:3)",
+      "line_count": 36,
+      "key_ops": ["fir.do_loop", "fir.array_load", "fir.array_fetch", "fir.array_update", "fir.array_merge_store", "arith.addf"],
+      "loc_map": {
+        "01_array_assignment.f90:9": [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After LowerHLFIR (flang-lower-hlfir) ***\nmodule @_QMarray_add {\n  func.func @_QParray_add(\n      %arg0: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"a\", fir.inout},\n      %arg1: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"b\", fir.in},\n      %arg2: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"c\", fir.in},\n      %arg3: !fir.ref<i32> {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %0 = fir.load %arg3 : !fir.ref<i32>\n    %1 = fir.convert %0 : (i32) -> index\n    %shape = fir.shape %1 : (index) -> !fir.shape<1>\n\n    // hlfir.declare binds name + shape to the reference\n    %a:2 = hlfir.declare %arg0(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_out>,\n         uniq_name = \"_QFarray_addEa\"}\n        : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>)\n       -> (!fir.box<!fir.array<?xf32>>, !fir.ref<!fir.array<?xf32>>)\n\n    %b:2 = hlfir.declare %arg1(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_in>,\n         uniq_name = \"_QFarray_addEb\"}\n        : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>)\n       -> (!fir.box<!fir.array<?xf32>>, !fir.ref<!fir.array<?xf32>>)\n\n    %c:2 = hlfir.declare %arg2(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_in>,\n         uniq_name = \"_QFarray_addEc\"}\n        : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>)\n       -> (!fir.box<!fir.array<?xf32>>, !fir.ref<!fir.array<?xf32>>)\n\n    // hlfir.elemental captures element-wise semantics as a value\n    // The body is a region run once per index — no explicit loop yet\n    %expr = hlfir.elemental %shape unordered\n        : (!fir.shape<1>) -> !hlfir.expr<?xf32> {\n    ^bb0(%i: index):\n      %b_el = hlfir.apply %b#0, %i\n          : (!fir.box<!fir.array<?xf32>>, index) -> f32\n      %c_el = hlfir.apply %c#0, %i\n          : (!fir.box<!fir.array<?xf32>>, index) -> f32\n      %sum = arith.addf %b_el, %c_el fastmath<contract> : f32\n      hlfir.yield_element %sum : f32\n    }\n\n    // Assign the elemental result into a%0 (the box-typed view of a)\n    hlfir.assign %expr to %a#0\n        : !hlfir.expr<?xf32>, !fir.box<!fir.array<?xf32>>\n    hlfir.destroy %expr : !hlfir.expr<?xf32>\n    return\n  } loc(#loc1)\n}\n#loc1 = loc(\"01_array_assignment.f90\":3:0)\n#loc2 = loc(\"01_array_assignment.f90\":9:3)",
+      "line_count": 52,
+      "key_ops": ["hlfir.declare", "hlfir.elemental", "hlfir.apply", "hlfir.yield_element", "hlfir.assign", "hlfir.destroy", "arith.addf"],
+      "loc_map": {
+        "01_array_assignment.f90:9": [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '01_array_assignment.f90'\nsource_filename = \"01_array_assignment.f90\"\ntarget datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\ntarget triple = \"x86_64-unknown-linux-gnu\"\n\n; Function Attrs: nounwind\ndefine void @_QParray_add(\n    ptr nocapture %0,            ; a(:)\n    ptr nocapture readonly %1,   ; b(:)\n    ptr nocapture readonly %2,   ; c(:)\n    ptr nocapture readonly %3    ; n\n) #0 !dbg !5 {\nentry:\n  %n_val = load i32, ptr %3, align 4, !dbg !10\n  %n_ext = sext i32 %n_val to i64, !dbg !10\n  %loop_guard = icmp sgt i64 %n_ext, 0, !dbg !11\n  br i1 %loop_guard, label %loop.preheader, label %return, !dbg !11\n\nloop.preheader:                              ; preds = %entry\n  br label %loop, !dbg !12\n\nloop:                                        ; preds = %loop.preheader, %loop\n  ; IV starts at 0 (0-based); Fortran 1-based → compiler adjusts base pointer\n  %iv = phi i64 [ 0, %loop.preheader ], [ %iv.next, %loop ], !dbg !12\n  %b_ptr = getelementptr inbounds float, ptr %1, i64 %iv, !dbg !12\n  %b_val = load float, ptr %b_ptr, align 4, !dbg !12\n  %c_ptr = getelementptr inbounds float, ptr %2, i64 %iv, !dbg !12\n  %c_val = load float, ptr %c_ptr, align 4, !dbg !12\n  %sum   = fadd contract float %b_val, %c_val, !dbg !12\n  %a_ptr = getelementptr inbounds float, ptr %0, i64 %iv, !dbg !12\n  store float %sum, ptr %a_ptr, align 4, !dbg !12\n  %iv.next = add nuw nsw i64 %iv, 1, !dbg !12\n  %exit   = icmp eq i64 %iv.next, %n_ext, !dbg !12\n  br i1 %exit, label %return, label %loop, !dbg !12\n\nreturn:                                      ; preds = %loop, %entry\n  ret void, !dbg !13\n}\n\nattributes #0 = { nounwind \"frame-pointer\"=\"none\" \"no-trapping-math\"=\"true\" }\n\n!llvm.dbg.cu = !{!0}\n!llvm.module.flags = !{!3, !4}\n\n!0  = distinct !DICompileUnit(language: DW_LANG_Fortran90, file: !1, producer: \"flang version 17.0.0\", isOptimized: false)\n!1  = !DIFile(filename: \"01_array_assignment.f90\", directory: \"/workspace\")\n!2  = !DIBasicType(name: \"real\", size: 32, encoding: DW_ATE_float)\n!3  = !{i32 2, !\"Debug Info Version\", i32 3}\n!4  = !{i32 1, !\"wchar_size\", i32 4}\n!5  = distinct !DISubprogram(name: \"array_add\", linkageName: \"_QParray_add\", scope: !1, file: !1, line: 3, unit: !0)\n!10 = !DILocation(line: 5, column: 3, scope: !5)\n!11 = !DILocation(line: 9, column: 3, scope: !5)\n!12 = !DILocation(line: 9, column: 5, scope: !5)\n!13 = !DILocation(line: 11, column: 1, scope: !5)",
+      "line_count": 55,
+      "key_ops": ["getelementptr", "load", "fadd", "store", "br", "phi", "icmp", "sext", "ret"],
+      "loc_map": {
+        "01_array_assignment.f90:9": [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 9,
+      "source_col": 3,
+      "source_text": "  a = b + c",
+      "construct_type": "array_assignment",
+      "parse_tree_nodes": ["AssignmentStmt", "AddOp", "PartRef"],
+      "fir_ops": ["fir.array_load", "fir.do_loop", "fir.array_fetch", "arith.addf", "fir.array_update", "fir.array_merge_store"],
+      "hlfir_ops": ["hlfir.elemental", "hlfir.apply", "arith.addf", "hlfir.yield_element", "hlfir.assign"],
+      "llvm_ir_lines": ["getelementptr", "load", "fadd", "store"],
+      "lowering_notes": "Array assignment lowers through HLFIR's elemental model: hlfir.elemental captures the element-wise semantics as a value-typed expression (!hlfir.expr), then lowered to fir.do_loop + fir.array_fetch/update, finally becoming a counted loop in LLVM IR with GEP + load + fadd + store."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "Elemental Array Operation",
+      "description": "Source-level array operator → hlfir.elemental (value semantics) → fir.do_loop (loop materialization) → LLVM counted loop with GEP"
+    },
+    {
+      "name": "Array Merge Store",
+      "description": "fir.array_merge_store is the final step that writes the loop result back to the dummy argument's memory location, respecting Fortran's copy-in/copy-out semantics"
+    }
+  ]
+}

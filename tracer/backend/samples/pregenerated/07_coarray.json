@@ -1,0 +1,89 @@
+{
+  "id": "07_coarray",
+  "name": "Coarray Remote Memory Access (CAF)",
+  "description": "Coarray indexing a[image_id] lowers to _caf_get/_caf_put OpenCoarrays runtime calls; SYNC ALL becomes a barrier",
+  "category": "distributed",
+  "complexity": "VERY_HIGH",
+  "fortran_standard": "F2008",
+  "key_patterns": ["fir.call @_caf_get", "fir.call @_caf_put", "fir.global_len", "SYNC ALL → barrier call"],
+  "source": "subroutine coarray_halo_exchange(a, n)\n  implicit none\n  integer, intent(in) :: n\n  real, intent(inout) :: a(n)[*]\n\n  integer :: me, nimg\n  me   = THIS_IMAGE()\n  nimg = NUM_IMAGES()\n\n  if (me > 1) then\n    a(1) = a(n)[me - 1]\n  end if\n\n  SYNC ALL\nend subroutine coarray_halo_exchange",
+  "stages": {
+    "parse_tree": {
+      "stage": "parse_tree",
+      "content": "  SubroutineSubprogram\n  | SubroutineStmt -> Name = 'coarray_halo_exchange'\n  | SpecificationPart\n  | | ImplicitPart -> ImplicitNoneStmt\n  | | TypeDeclarationStmt (INTEGER intent=IntentIn)\n  | | | EntityDecl -> ObjectName = 'n'\n  | | TypeDeclarationStmt (REAL intent=IntentInout)\n  | | | EntityDecl -> ObjectName = 'a'\n  | | | | CoarraySpec -> DeferredCoshapeSpec  [*]\n  | | | | ExplicitShapeSpec -> Name = 'n'\n  | | TypeDeclarationStmt (INTEGER)\n  | | | EntityDecl -> ObjectName = 'me'\n  | | | EntityDecl -> ObjectName = 'nimg'\n  | ExecutionPart\n  | | AssignmentStmt\n  | | | Variable -> Name = 'me'\n  | | | Expr -> IntrinsicProcedureRef -> Name = 'THIS_IMAGE'\n  | | AssignmentStmt\n  | | | Variable -> Name = 'nimg'\n  | | | Expr -> IntrinsicProcedureRef -> Name = 'NUM_IMAGES'\n  | | IfConstruct\n  | | | IfThenStmt -> RelExpr (me > 1)\n  | | | Block\n  | | | | AssignmentStmt\n  | | | | | Variable -> Designator -> DataRef\n  | | | | | | PartRef -> Name='a', SectionSubscript='1'\n  | | | | | Expr -> Designator -> DataRef\n  | | | | | | PartRef -> Name='a', SectionSubscript='n'\n  | | | | | | ImageSelector -> SectionSubscript (me - 1)  ← coarray subscript\n  | | SyncAllStmt\n  | EndSubroutineStmt",
+      "line_count": 33,
+      "key_ops": ["CoarraySpec", "ImageSelector", "SyncAllStmt", "IntrinsicProcedureRef (THIS_IMAGE, NUM_IMAGES)"],
+      "loc_map": {}
+    },
+    "semantics": {
+      "stage": "semantics",
+      "content": "Symbol table: coarray_halo_exchange\n  a:    rank=1 REAL(4) intent=IntentInout corank=1 shape=(1:n) cobound=[*]\n  n:    rank=0 INTEGER(4) intent=IntentIn\n  me:   rank=0 INTEGER(4) local\n  nimg: rank=0 INTEGER(4) local\n\nCoarray analysis:\n  a(n)[me-1]:\n    Array subscript: n   → local element index (1-based)\n    Image subscript: me-1 → remote image index\n    Access type: REMOTE READ (get)\n    Runtime call: _caf_get(token, image_idx, src_offset, dst_ptr, elem_size, num_elements)\n    Token: compile-time coarray registration handle\n  a(1) = ... (LHS): LOCAL WRITE (no runtime call — same image)\n  SYNC ALL: barrier across all images (OpenCoarrays: _caf_sync_all)\n\nTHIS_IMAGE(): intrinsic → _caf_this_image()\nNUM_IMAGES(): intrinsic → _caf_num_images()",
+      "line_count": 18,
+      "key_ops": ["a", "me", "nimg", "_caf_get", "_caf_sync_all"],
+      "loc_map": {}
+    },
+    "fir": {
+      "stage": "fir",
+      "content": "// *** IR Dump After FIR Lowering ***\nmodule @_QMcoarray {\n\n  // Coarray token — compile-time registration handle\n  fir.global @_QFcoarray_halo_exchangeEa.token\n      : !fir.ref<none>   // opaque token, managed by OpenCoarrays runtime\n\n  func.func @_QPcoarray_halo_exchange(\n      %arg0: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"a\", fir.inout},\n      %arg1: !fir.ref<i32>               {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %c1     = arith.constant 1 : index\n    %c1_i32 = arith.constant 1 : i32\n    %c4     = arith.constant 4 : index   // sizeof(f32)\n\n    // THIS_IMAGE() and NUM_IMAGES() → runtime calls\n    %me   = fir.call @_caf_this_image() : () -> i32\n    %nimg = fir.call @_caf_num_images() : () -> i32\n\n    // Load n and compute shape\n    %n_val = fir.load %arg1 : !fir.ref<i32>\n    %n_idx = fir.convert %n_val : (i32) -> index\n    %shape = fir.shape %n_idx : (index) -> !fir.shape<1>\n\n    // if (me > 1)\n    %me_gt1 = arith.cmpi sgt, %me, %c1_i32 : i32\n    fir.if %me_gt1 {\n\n      // a(n)[me-1]: remote read via _caf_get\n      // src image = me - 1\n      %src_img = arith.subi %me, %c1_i32 : i32\n\n      // Compute byte offset of a(n): (n-1) * sizeof(f32)\n      %n_m1   = arith.subi %n_idx, %c1 : index\n      %offset = arith.muli %n_m1, %c4  : index\n      %offset_i64 = fir.convert %offset : (index) -> i64\n\n      // Token for this coarray\n      %token = fir.address_of(@_QFcoarray_halo_exchangeEa.token) : !fir.ref<none>\n\n      // Destination: a(1) — local element 0, byte offset 0\n      %dst_ptr = fir.coordinate_of %arg0, %c1 : (!fir.ref<!fir.array<?xf32>>, index) -> !fir.ref<f32>\n\n      // _caf_get(token, image, src_byte_offset, dst_ptr, element_size, n_elements)\n      fir.call @_caf_get(%token, %src_img, %offset_i64, %dst_ptr, %c4, %c1)\n                 : (!fir.ref<none>, i32, i64, !fir.ref<f32>, index, index) -> ()\n    }\n\n    // SYNC ALL → barrier\n    fir.call @_caf_sync_all() : () -> ()\n    return\n  }\n}\n#loc1 = loc(\"07_coarray.f90\":4:0)\n#loc2 = loc(\"07_coarray.f90\":11:5)\n#loc3 = loc(\"07_coarray.f90\":14:3)",
+      "line_count": 52,
+      "key_ops": ["fir.global (token)", "fir.call @_caf_this_image", "fir.call @_caf_num_images", "arith.cmpi", "fir.if", "fir.call @_caf_get", "fir.call @_caf_sync_all", "fir.coordinate_of"],
+      "loc_map": {
+        "07_coarray.f90:11": [25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
+        "07_coarray.f90:14": [42, 43]
+      }
+    },
+    "hlfir": {
+      "stage": "hlfir",
+      "content": "// *** IR Dump After HLFIR Lowering ***\nmodule @_QMcoarray {\n  fir.global @_QFcoarray_halo_exchangeEa.token : !fir.ref<none>\n\n  func.func @_QPcoarray_halo_exchange(\n      %arg0: !fir.ref<!fir.array<?xf32>> {fir.bindc_name = \"a\", fir.inout},\n      %arg1: !fir.ref<i32>               {fir.bindc_name = \"n\", fir.in}\n  ) {\n    %n_val  = fir.load %arg1 : !fir.ref<i32>\n    %n_idx  = fir.convert %n_val : (i32) -> index\n    %shape  = fir.shape %n_idx : (index) -> !fir.shape<1>\n\n    // hlfir.declare for the coarray argument\n    // Note: coarray attribute is carried in fortran_attrs\n    %a:2 = hlfir.declare %arg0(%shape)\n        {fortran_attrs = #fir.var_attrs<intent_inout, target>,\n         uniq_name = \"_QFcoarray_halo_exchangeEa\"}\n        : (!fir.ref<!fir.array<?xf32>>, !fir.shape<1>)\n       -> (!fir.box<!fir.array<?xf32>>, !fir.ref<!fir.array<?xf32>>)\n\n    // Intrinsics: THIS_IMAGE and NUM_IMAGES lower to direct runtime calls\n    %me   = fir.call @_caf_this_image() : () -> i32\n    %nimg = fir.call @_caf_num_images() : () -> i32\n\n    %c1   = arith.constant 1 : i32\n    %cond = arith.cmpi sgt, %me, %c1 : i32\n\n    fir.if %cond {\n      // a(n)[me-1]: coarray remote access → _caf_get\n      %src_img = arith.subi %me, %c1 : i32\n      // byte offset for element n: (n_idx-1)*4\n      %n_m1   = arith.subi %n_idx, 1 : index\n      %offset = arith.muli %n_m1, 4 : index\n      %off64  = fir.convert %offset : (index) -> i64\n      %token  = fir.address_of(@_QFcoarray_halo_exchangeEa.token) : !fir.ref<none>\n      %dst_ref = fir.coordinate_of %a#1, 1 : (!fir.ref<!fir.array<?xf32>>, index) -> !fir.ref<f32>\n      fir.call @_caf_get(%token, %src_img, %off64, %dst_ref, 4, 1)\n                 : (!fir.ref<none>, i32, i64, !fir.ref<f32>, index, index) -> ()\n    }\n    fir.call @_caf_sync_all() : () -> ()\n    return\n  }\n}\n#loc1 = loc(\"07_coarray.f90\":4:0)",
+      "line_count": 44,
+      "key_ops": ["hlfir.declare (coarray)", "fir.call @_caf_this_image", "fir.call @_caf_num_images", "fir.if", "fir.call @_caf_get", "fir.call @_caf_sync_all"],
+      "loc_map": {
+        "07_coarray.f90:11": [25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+      }
+    },
+    "llvm_ir": {
+      "stage": "llvm_ir",
+      "content": "; ModuleID = '07_coarray.f90'\n; OpenCoarrays ABI declarations\ndeclare i32 @_caf_this_image()\ndeclare i32 @_caf_num_images()\ndeclare void @_caf_get(ptr, i32, i64, ptr, i64, i64)\ndeclare void @_caf_sync_all()\n\n; Coarray token — global opaque registration handle\n@_QFcoarray_halo_exchangeEa.token = global ptr null\n\ndefine void @_QPcoarray_halo_exchange(\n    ptr nocapture %0,           ; a(:)[*]\n    ptr nocapture readonly %1   ; n\n) #0 !dbg !5 {\nentry:\n  ; THIS_IMAGE(), NUM_IMAGES() — runtime calls, not compile-time constants\n  %me   = call i32 @_caf_this_image(), !dbg !10\n  %nimg = call i32 @_caf_num_images(), !dbg !10\n\n  %n_val = load i32, ptr %1, align 4, !dbg !10\n  %n_ext = sext i32 %n_val to i64\n\n  %c1    = i32 1\n  %cond  = icmp sgt i32 %me, 1, !dbg !11\n  br i1 %cond, label %if_body, label %sync_block, !dbg !11\n\nif_body:\n  ; Compute source image index: me - 1\n  %src_img = sub i32 %me, 1, !dbg !12\n\n  ; Byte offset for a(n): (n-1) * 4 bytes\n  %n_m1    = sub nsw i64 %n_ext, 1, !dbg !12\n  %offset  = mul nsw i64 %n_m1, 4, !dbg !12   ; sizeof(float) = 4\n\n  ; Destination pointer: a(1) = base + offset 0\n  %dst_ptr = getelementptr inbounds float, ptr %0, i64 0, !dbg !12\n\n  ; Load coarray token (registered at startup by OpenCoarrays)\n  %token   = load ptr, ptr @_QFcoarray_halo_exchangeEa.token, align 8, !dbg !12\n\n  ; Remote get: copies element from image (me-1) into local a(1)\n  ; ABI: _caf_get(token, src_image, src_offset_bytes, dst_ptr, elem_bytes, n_elems)\n  call void @_caf_get(ptr %token, i32 %src_img, i64 %offset,\n                      ptr %dst_ptr, i64 4, i64 1), !dbg !12\n  br label %sync_block\n\nsync_block:\n  ; SYNC ALL — global barrier across all images\n  call void @_caf_sync_all(), !dbg !13\n  ret void, !dbg !14\n}\n\n; KEY INSIGHT: There is NO load/store for the remote element.\n; All remote memory access goes through the OpenCoarrays ABI.\n; The token is a compile-time opaque handle registered at program startup.\n\n!5  = distinct !DISubprogram(name: \"coarray_halo_exchange\", line: 4)\n!10 = !DILocation(line: 7, column: 3, scope: !5)\n!11 = !DILocation(line: 10, column: 3, scope: !5)\n!12 = !DILocation(line: 11, column: 5, scope: !5)\n!13 = !DILocation(line: 14, column: 3, scope: !5)\n!14 = !DILocation(line: 15, column: 1, scope: !5)",
+      "line_count": 62,
+      "key_ops": ["call @_caf_this_image", "call @_caf_num_images", "call @_caf_get", "call @_caf_sync_all", "getelementptr", "load", "icmp", "br"],
+      "loc_map": {
+        "07_coarray.f90:11": [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36],
+        "07_coarray.f90:14": [38, 39]
+      }
+    }
+  },
+  "correlations": [
+    {
+      "source_line": 11,
+      "source_col": 5,
+      "source_text": "    a(1) = a(n)[me - 1]",
+      "construct_type": "coarray_access",
+      "parse_tree_nodes": ["AssignmentStmt", "ImageSelector (me-1)", "PartRef (a,n)"],
+      "fir_ops": ["fir.call @_caf_get (token, src_image, offset, dst, size, count)"],
+      "hlfir_ops": ["fir.call @_caf_get", "fir.coordinate_of (local dst)"],
+      "llvm_ir_lines": ["call @_caf_get", "getelementptr (local dst only)"],
+      "lowering_notes": "Coarray remote element access a(n)[me-1] generates a single _caf_get call — there is no LLVM load/store for the remote element. The compiler encodes three pieces of information: (1) the coarray token (compile-time registration), (2) the source image index (me-1 computed at runtime), (3) the byte offset of element a(n) computed as (n-1)*sizeof(f32). The OpenCoarrays runtime handles the inter-process communication, which may be MPI point-to-point, shared memory, or RDMA depending on build configuration."
+    },
+    {
+      "source_line": 14,
+      "source_col": 3,
+      "source_text": "  SYNC ALL",
+      "construct_type": "coarray_access",
+      "parse_tree_nodes": ["SyncAllStmt"],
+      "fir_ops": ["fir.call @_caf_sync_all"],
+      "hlfir_ops": ["fir.call @_caf_sync_all"],
+      "llvm_ir_lines": ["call @_caf_sync_all"],
+      "lowering_notes": "SYNC ALL maps to a single runtime call that serves as a global barrier across all coarray images. No IR around it — no registers saved, no memory ops — just a call site. The barrier's semantics are entirely in the runtime library."
+    }
+  ],
+  "lowering_patterns": [
+    {
+      "name": "Coarray Remote Get → _caf_get ABI",
+      "description": "a(i)[image] lowers to _caf_get(token, image, byte_offset, local_dst, elem_size, count) — all remote access abstracted through the OpenCoarrays ABI with no direct LLVM load/store across address spaces"
+    },
+    {
+      "name": "SYNC ALL → _caf_sync_all Barrier",
+      "description": "Fortran SYNC ALL generates a single unconditional call to _caf_sync_all(); the semantics of cross-image ordering are entirely inside the runtime library"
+    }
+  ]
+}
