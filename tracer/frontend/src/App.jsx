@@ -17,8 +17,9 @@ import TraceFlow from './components/TraceFlow.jsx'
 import CompareView from './components/CompareView.jsx'
 import PatternAnalyzer from './components/PatternAnalyzer.jsx'
 
-// Backend URL — direct (CORS is open) so the proxy isn't required
-const API = 'http://localhost:8001'
+// VITE_API_URL: set to your backend URL in production (e.g. https://fpc-trace.onrender.com)
+// Leave unset for local dev (Vite proxy) or Docker (nginx proxy handles /api)
+const API = import.meta.env.VITE_API_URL ?? ''
 
 async function apiFetch(path, opts) {
   const r = await fetch(API + path, opts)

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: fpc-trace
+    runtime: docker
+    # Root Dockerfile builds frontend + serves everything via FastAPI
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false   # paste your key in the Render dashboard (optional)

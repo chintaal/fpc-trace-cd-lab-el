@@ -1,15 +1,23 @@
 """
-Claude API orchestration for IR analysis.
+LLM orchestration for IR analysis — provider-agnostic via LiteLLM.
 
-Provides both a streaming endpoint (SSE, for frontend typewriter effect)
-and a batch call (for CLI and report generation).
+Configure via env vars:
+  LLM_MODEL      any LiteLLM model string, e.g.
+                   claude-sonnet-4-20250514  (Anthropic)
+                   gpt-4o                    (OpenAI)
+                   groq/llama-3.3-70b-versatile
+                   ollama/llama3.2           (local, no key needed)
+  LLM_BASE_URL   optional custom endpoint (for Ollama, LM Studio, etc.)
+  <PROVIDER>_API_KEY  whatever the chosen provider requires
+
+If LLM_MODEL is unset the caller falls back to pre-generated notes.
 """
 from __future__ import annotations
 
 import os
 from typing import AsyncIterator
 
-import anthropic
+import litellm
 
 from llm.prompts.ir_analyst import (
     SYSTEM_PROMPT,
@@ -19,18 +27,23 @@ from llm.prompts.ir_analyst import (
 )
 from models.schemas import ExplainRequest
 
-MODEL = "claude-sonnet-4-20250514"
+litellm.suppress_debug_info = True
+
+MODEL     = os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514")
+BASE_URL  = os.environ.get("LLM_BASE_URL") or None
 MAX_TOKENS = 1500
 
 
-def _client() -> anthropic.AsyncAnthropic:
-    return anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+def _kwargs(max_tokens: int = MAX_TOKENS) -> dict:
+    kw: dict = {"max_tokens": max_tokens}
+    if BASE_URL:
+        kw["api_base"] = BASE_URL
+    return kw
 
 
 async def stream_analysis(req: ExplainRequest) -> AsyncIterator[str]:
     """Yields text chunks for SSE streaming to the frontend."""
     stages = req.stage_outputs
-
     prompt = build_analysis_prompt(
         construct_type=req.source_text,
         source_text=req.source_text,
@@ -42,20 +55,24 @@ async def stream_analysis(req: ExplainRequest) -> AsyncIterator[str]:
         lowering_context=req.lowering_context or "",
     )
 
-    async with _client().messages.stream(
+    response = await litellm.acompletion(
         model=MODEL,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        async for text in stream.text_stream:
-            yield text
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
+        stream=True,
+        **_kwargs(),
+    )
+    async for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
 
 
 async def analyze_batch(req: ExplainRequest) -> str:
-    """Single blocking call; used by CLI tool."""
+    """Single blocking call; used by CLI and report generation."""
     stages = req.stage_outputs
-
     prompt = build_analysis_prompt(
         construct_type=req.source_text,
         source_text=req.source_text,
@@ -67,21 +84,27 @@ async def analyze_batch(req: ExplainRequest) -> str:
         lowering_context=req.lowering_context or "",
     )
 
-    result = await _client().messages.create(
+    response = await litellm.acompletion(
         model=MODEL,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
+        **_kwargs(),
     )
-    return result.content[0].text
+    return response.choices[0].message.content
 
 
-async def summarize_pattern(construct_name: str, key_ops: list[str], lowering_notes: str) -> str:
+async def summarize_pattern(
+    construct_name: str, key_ops: list[str], lowering_notes: str
+) -> str:
     prompt = build_pattern_summary_prompt(construct_name, key_ops, lowering_notes)
-    result = await _client().messages.create(
+    response = await litellm.acompletion(
         model=MODEL,
-        max_tokens=200,
-        system=MITRE_SUMMARY_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": MITRE_SUMMARY_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
+        **_kwargs(max_tokens=200),
     )
-    return result.content[0].text
+    return response.choices[0].message.content

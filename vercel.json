@@ -1,0 +1,8 @@
+{
+  "buildCommand": "cd tracer/frontend && npm install && npm run build",
+  "outputDirectory": "tracer/frontend/dist",
+  "framework": null,
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

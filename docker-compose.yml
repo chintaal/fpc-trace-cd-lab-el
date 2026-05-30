@@ -1,0 +1,29 @@
+services:
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: tracer/backend
+    ports:
+      - "8001:8001"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8001/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── React frontend (nginx, proxies /api → backend) ───────────────────────────
+  frontend:
+    build:
+      context: tracer/frontend
+      args:
+        # Empty → nginx proxies /api to the backend container
+        VITE_API_URL: ""
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy

@@ -64,6 +64,17 @@ app.add_middleware(
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+def _llm_configured() -> bool:
+    """True when at least one LLM provider appears to be set up."""
+    if os.environ.get("LLM_MODEL"):
+        return True
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY",
+                "COHERE_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY"):
+        if os.environ.get(key):
+            return True
+    return False
+
+
 def _load_pregenerated(construct_id: str) -> dict:
     path = PREGENERATED_DIR / f"{construct_id}.json"
     if not path.exists():
@@ -85,12 +96,15 @@ def _all_pregenerated() -> list[dict]:
 @app.get("/api/health", response_model=HealthResponse)
 async def health():
     flang_ok, flang_ver = detect_flang()
+    llm_ok = _llm_configured()
     return HealthResponse(
         status="ok",
         flang_available=flang_ok,
         flang_version=flang_ver,
         mode=CompilerMode.REAL if flang_ok else CompilerMode.SIMULATION,
         construct_count=len(list(PREGENERATED_DIR.glob("*.json"))),
+        llm_configured=llm_ok,
+        llm_model=os.environ.get("LLM_MODEL") if llm_ok else None,
     )
 
 
@@ -168,9 +182,8 @@ async def analyze(req: AnalyzeRequest):
 @app.post("/api/explain")
 async def explain(req: ExplainRequest):
     """Stream AI explanation for a construct's lowering chain (SSE)."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        # Return a static explanation when no API key is configured
+    if not _llm_configured():
+        # Return a static explanation when no LLM provider is configured
         async def _fallback() -> AsyncIterator[str]:
             data = _load_pregenerated(req.construct_id)
             corrs = data.get("correlations", [])
@@ -178,7 +191,7 @@ async def explain(req: ExplainRequest):
                 if c.get("source_line") == req.source_line:
                     yield f"data: {json.dumps({'text': c.get('lowering_notes', '')})}\n\n"
                     return
-            yield f"data: {json.dumps({'text': 'Set ANTHROPIC_API_KEY for live AI analysis.'})}\n\n"
+            yield f"data: {json.dumps({'text': 'Set LLM_MODEL + provider API key for live AI analysis.'})}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(_fallback(), media_type="text/event-stream")

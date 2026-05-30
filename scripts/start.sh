@@ -44,7 +44,7 @@ if [ ! -d .venv ]; then
   python3 -m venv .venv
 fi
 source .venv/bin/activate
-pip install -q fastapi uvicorn pydantic python-dotenv httpx sse-starlette aiofiles 2>&1 | tail -1
+pip install -q fastapi uvicorn pydantic python-dotenv httpx sse-starlette aiofiles litellm 2>&1 | tail -1
 
 echo -e "${BLU}  [2/3] Starting FastAPI backend on :${PORT_BACKEND}…${RST}"
 uvicorn main:app --host 0.0.0.0 --port "$PORT_BACKEND" --log-level warning &

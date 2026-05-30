@@ -93,3 +93,5 @@ class HealthResponse(BaseModel):
     flang_version: Optional[str]
     mode: CompilerMode
     construct_count: int
+    llm_configured: bool = False
+    llm_model: Optional[str] = None
